@@ -1,15 +1,18 @@
+#![allow(clippy::extra_unused_type_parameters)]
+use std::ops::{Add, Mul};
+
 use wgpu::{
     util::{BufferInitDescriptor, DeviceExt},
     BufferUsages,
 };
 use winit::{dpi::PhysicalSize, window::Window};
 
-const NUM_VERTICES: usize = 1 + 2_usize.pow(8);
+const NUM_VERTICES: usize = 1 + 2_usize.pow(6);
 const NUM_INDICES: usize = (NUM_VERTICES - 1) * 2;
 
 const BACKGROUND_COLOR: [f64; 3] = [0.0, 0.0, 0.0];
 
-const WORK_GROUP_SIZE: u32 = 64;
+const WORK_GROUP_SIZE: usize = 2_usize.pow(6);
 const WORK_GROUP_COUNT: u32 = 1;
 
 const MIN_BUFFER_SIZE: usize = 2056;
@@ -27,9 +30,9 @@ pub struct State {
     compute_bind_group: wgpu::BindGroup,
     vertex_buffer: wgpu::Buffer,
     direction_buffer: wgpu::Buffer,
-    direction_uniform_buffer: wgpu::Buffer,
+    compute_uniform_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
-    color_uniform_buffer: wgpu::Buffer,
+    render_uniform_buffer: wgpu::Buffer,
 }
 
 impl State {
@@ -205,35 +208,28 @@ impl State {
             entry_point: "main",
         });
 
-        let mut vertices = [Vertex { position: [0.0; 2] }; NUM_VERTICES];
-        let mut indices = [0; NUM_INDICES];
-        let mut color = [0.0_f32; MIN_BUFFER_SIZE / std::mem::size_of::<f32>()];
-        let mut direction =
-            [Vertex { position: [0.0; 2] }; MIN_BUFFER_SIZE / std::mem::size_of::<Vertex>()];
-
-        color[1] = 1.0;
-
-        direction[0] = Vertex {
-            position: [0.0, 1.0],
-        };
-        direction[1] = Vertex {
-            position: [1.0, 0.0],
-        };
+        let vertices = [[0.0; 2]; NUM_VERTICES]; //TODO unnessecary
+        let directions = [[0.0; 2]; NUM_VERTICES * 2];
+        let mut indices = [0u32; NUM_INDICES];
+        let render_uniform = [0u8; MIN_BUFFER_SIZE];
+        let compute_uniform = [0u8; MIN_BUFFER_SIZE];
 
         for i in 0..NUM_INDICES / 2 {
-            indices[2 * i] = i / 2;
-            indices[2 * i + 1] = i + 1;
+            indices[2 * i] = (i / 2) as u32;
+            indices[2 * i + 1] = (i + 1) as u32;
         }
+
+        println!("{:?}", &indices[..20]);
 
         let vertex_buffer = device.create_buffer_init(&BufferInitDescriptor {
             label: Some("Vertex Buffer"),
             contents: bytemuck::cast_slice(&vertices),
-            usage: BufferUsages::VERTEX | BufferUsages::STORAGE,
+            usage: BufferUsages::VERTEX | BufferUsages::STORAGE | BufferUsages::COPY_DST,
         });
 
-        let color_uniform_buffer = device.create_buffer_init(&BufferInitDescriptor {
+        let render_uniform_buffer = device.create_buffer_init(&BufferInitDescriptor {
             label: Some("Color Uniform Buffer"),
-            contents: bytemuck::cast_slice(&color),
+            contents: bytemuck::cast_slice(&render_uniform),
             usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST | BufferUsages::STORAGE,
         });
 
@@ -242,21 +238,19 @@ impl State {
             layout: &render_bind_group_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
-                resource: color_uniform_buffer.as_entire_binding(),
+                resource: render_uniform_buffer.as_entire_binding(),
             }],
         });
 
-        vertices[0] = Vertex { position: [0.0; 2] };
-
         let direction_buffer = device.create_buffer_init(&BufferInitDescriptor {
             label: Some("Direction Buffer"),
-            contents: bytemuck::cast_slice(&vertices),
+            contents: bytemuck::cast_slice(&directions),
             usage: BufferUsages::STORAGE,
         });
 
-        let direction_uniform_buffer = device.create_buffer_init(&BufferInitDescriptor {
+        let compute_uniform_buffer = device.create_buffer_init(&BufferInitDescriptor {
             label: Some("Direction Uniform Buffer"),
-            contents: bytemuck::cast_slice(&direction),
+            contents: bytemuck::cast_slice(&compute_uniform),
             usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST | BufferUsages::STORAGE,
         });
 
@@ -274,7 +268,7 @@ impl State {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: direction_uniform_buffer.as_entire_binding(),
+                    resource: compute_uniform_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -299,8 +293,8 @@ impl State {
             direction_buffer,
             compute_bind_group,
             render_bind_group,
-            direction_uniform_buffer,
-            color_uniform_buffer,
+            compute_uniform_buffer,
+            render_uniform_buffer,
         }
     }
 
@@ -324,6 +318,42 @@ impl State {
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         let output = self.surface.get_current_texture()?;
         let view = output.texture.create_view(&Default::default());
+
+        let hour_angle = 0.5_f32;
+        let minute_angle = 0.2_f32;
+
+        let shrinking_factor = 0.5;
+
+        let mut hour_vertex: Vertex = hour_angle.sin_cos().into();
+        let mut minute_vertex: Vertex = minute_angle.sin_cos().into();
+
+        hour_vertex.scale(shrinking_factor);
+        minute_vertex.scale(shrinking_factor);
+
+        let mut vertices = [Vertex { x: 0.0, y: 0.0 }; NUM_VERTICES]; //TODO unnessecary
+        let mut directions = [Vertex { x: 0.0, y: 0.0 }; NUM_VERTICES * 2];
+        directions[0] = hour_vertex;
+        directions[1] = minute_vertex;
+
+        for i in 0..WORK_GROUP_SIZE / 2 {
+            vertices[i * 2 + 1] = vertices[i] + directions[i * 2];
+            vertices[i * 2 + 2] = vertices[i] + directions[i * 2 + 1];
+
+            directions[i * 4 + 2] = directions[i * 2] * hour_vertex;
+            directions[i * 4 + 3] = directions[i * 2] * minute_vertex;
+            directions[i * 4 + 4] = directions[i * 2 + 1] * hour_vertex;
+            directions[i * 4 + 5] = directions[i * 2 + 1] * minute_vertex;
+        }
+
+        let color: [f32; 4] = [0.2, 1.0, 0.2, 1.0];
+
+        self.queue
+            .write_buffer(&self.render_uniform_buffer, 0, bytemuck::cast_slice(&color));
+
+        self.queue
+            .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
+        self.queue
+            .write_buffer(&self.direction_buffer, 0, bytemuck::cast_slice(&directions));
 
         let mut encoder = self
             .device
@@ -362,7 +392,7 @@ impl State {
             render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_bind_group(0, &self.render_bind_group, &[]);
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+            render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             render_pass.draw_indexed(0..NUM_INDICES as u32, 0, 0..1);
         }
 
@@ -377,7 +407,55 @@ impl State {
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct Vertex {
-    position: [f32; 2],
+    x: f32,
+    y: f32,
+}
+
+impl Vertex {
+    fn scale(&mut self, scalar: f32) {
+        self.x *= scalar;
+        self.y *= scalar;
+    }
+}
+
+impl From<(f32, f32)> for Vertex {
+    fn from(value: (f32, f32)) -> Self {
+        Self {
+            x: value.0,
+            y: value.1,
+        }
+    }
+}
+
+impl Add for Vertex {
+    type Output = Vertex;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        Self {
+            x: self.x + rhs.x,
+            y: self.y + rhs.y,
+        }
+    }
+}
+
+impl Mul for Vertex {
+    type Output = Vertex;
+
+    fn mul(self, rhs: Self) -> Self::Output {
+        Self {
+            x: self.x * rhs.x - self.y * rhs.y,
+            y: self.x * rhs.y + self.y * rhs.x,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct ComputeUniform {
+    hour: [f32; 2],
+    minute: [f32; 2],
+    input_offset: u32,
+    output_offset: u32,
 }
 
 const VERTEY_BUFFER_LAYOUT: wgpu::VertexBufferLayout = wgpu::VertexBufferLayout {
