@@ -19,20 +19,15 @@ pub async fn run() {
         Event::WindowEvent {
             ref event,
             window_id,
-        } if window_id == state.window().id() => {
-            if state.input(event) {
-                match event {
-                    WindowEvent::CloseRequested => control_flow.set_exit(),
-                    WindowEvent::Resized(size) => state.resize(*size),
-                    WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
-                        state.resize(**new_inner_size)
-                    }
-                    _ => {}
-                }
+        } if window_id == state.window().id() => match event {
+            WindowEvent::CloseRequested => control_flow.set_exit(),
+            WindowEvent::Resized(size) => state.resize(*size),
+            WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
+                state.resize(**new_inner_size)
             }
-        }
+            _ => {}
+        },
         Event::RedrawRequested(window_id) if window_id == state.window().id() => {
-            state.update();
             match state.render() {
                 Ok(()) => {}
                 Err(wgpu::SurfaceError::Lost) => state.resize(state.size()),

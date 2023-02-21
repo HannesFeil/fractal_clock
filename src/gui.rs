@@ -1,39 +1,41 @@
-use std::num::NonZeroU64;
-
 use wgpu::{
     util::{BufferInitDescriptor, DeviceExt},
     BufferUsages,
 };
-use winit::{dpi::PhysicalSize, event::WindowEvent, window::Window};
+use winit::{dpi::PhysicalSize, window::Window};
 
-const NUM_VERTICES: NonZeroU64 = unsafe { NonZeroU64::new_unchecked(1 + 2_u64.pow(4)) };
+const NUM_VERTICES: usize = 1 + 2_usize.pow(8);
+const NUM_INDICES: usize = (NUM_VERTICES - 1) * 2;
+
+const BACKGROUND_COLOR: [f64; 3] = [0.0, 0.0, 0.0];
+
+const WORK_GROUP_SIZE: u32 = 64;
+const WORK_GROUP_COUNT: u32 = 1;
+
+const MIN_BUFFER_SIZE: usize = 2056;
 
 pub struct State {
+    window: winit::window::Window,
+    size: winit::dpi::PhysicalSize<u32>,
     surface: wgpu::Surface,
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
-    size: winit::dpi::PhysicalSize<u32>,
-    window: winit::window::Window,
     render_pipeline: wgpu::RenderPipeline,
+    compute_pipeline: wgpu::ComputePipeline,
+    render_bind_group: wgpu::BindGroup,
+    compute_bind_group: wgpu::BindGroup,
     vertex_buffer: wgpu::Buffer,
+    direction_buffer: wgpu::Buffer,
+    direction_uniform_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
-    bind_group: wgpu::BindGroup,
+    color_uniform_buffer: wgpu::Buffer,
 }
 
 impl State {
-    // Creating some of the wgpu types requires async code
     pub async fn new(window: Window) -> Self {
         let size = window.inner_size();
-
-        // The instance is a handle to our GPU
-        // Backends::all => Vulkan + Metal + DX12 + Browser WebGPU
         let instance = wgpu::Instance::new(Default::default());
-
-        // # Safety
-        //
-        // The surface needs to live as long as the window that created it.
-        // State owns the window so this should be safe.
         let surface = unsafe { instance.create_surface(&window) }.unwrap();
 
         let adapter = instance
@@ -77,16 +79,90 @@ impl State {
             height: size.height,
             present_mode: surface_caps.present_modes[0],
             alpha_mode: surface_caps.alpha_modes[0],
-            view_formats: vec![],
+            view_formats: vec![], //TODO check color thingies
         };
         surface.configure(&device, &config);
 
         let shader = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
+        let compute_shader =
+            device.create_shader_module(wgpu::include_wgsl!("compute_shader.wgsl"));
+
+        let compute_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Bind Group Layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: Some(
+                                (NUM_VERTICES as u64 * std::mem::size_of::<Vertex>() as u64)
+                                    .try_into()
+                                    .expect("NUM_VERTICES should not be 0"),
+                            ),
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: Some(
+                                (NUM_VERTICES as u64 * std::mem::size_of::<Vertex>() as u64)
+                                    .try_into()
+                                    .expect("NUM_VERTICES should not be 0"),
+                            ),
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+
+        let compute_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Compute Pipeline Layout"),
+                bind_group_layouts: &[&compute_bind_group_layout],
+                ..Default::default()
+            });
+
+        let render_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Render Bind Group Layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: Some(
+                            (std::mem::size_of::<[f32; 4]>() as u64).try_into().unwrap(),
+                        ),
+                    },
+                    count: None,
+                }],
+            });
+
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Render Pipeline Layout"),
+                bind_group_layouts: &[&render_bind_group_layout],
                 ..Default::default()
             });
+
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Render Pipeline"),
             layout: Some(&render_pipeline_layout),
@@ -105,28 +181,49 @@ impl State {
                 })],
             }),
             primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList, // 1.
+                topology: wgpu::PrimitiveTopology::LineList,
                 strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw, // 2.
-                cull_mode: Some(wgpu::Face::Back),
-                // Setting this to anything other than Fill requires Features::NON_FILL_POLYGON_MODE
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
                 polygon_mode: wgpu::PolygonMode::Fill,
-                // Requires Features::DEPTH_CLIP_CONTROL
                 unclipped_depth: false,
-                // Requires Features::CONSERVATIVE_RASTERIZATION
                 conservative: false,
             },
-            depth_stencil: None, // 1.
+            depth_stencil: None,
             multisample: wgpu::MultisampleState {
-                count: 1,                         // 2.
-                mask: 0xFFFFFFFFFFFFFFFF,         // 3.
-                alpha_to_coverage_enabled: false, // 4.
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
             },
-            multiview: None, // 5.
+            multiview: None,
         });
 
-        let vertices = [Vertex { position: [0.5; 2] }; NUM_VERTICES.get() as usize];
-        let indices = [];
+        let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("Compute Pipeline"),
+            layout: Some(&compute_pipeline_layout),
+            module: &compute_shader,
+            entry_point: "main",
+        });
+
+        let mut vertices = [Vertex { position: [0.0; 2] }; NUM_VERTICES];
+        let mut indices = [0; NUM_INDICES];
+        let mut color = [0.0_f32; MIN_BUFFER_SIZE / std::mem::size_of::<f32>()];
+        let mut direction =
+            [Vertex { position: [0.0; 2] }; MIN_BUFFER_SIZE / std::mem::size_of::<Vertex>()];
+
+        color[1] = 1.0;
+
+        direction[0] = Vertex {
+            position: [0.0, 1.0],
+        };
+        direction[1] = Vertex {
+            position: [1.0, 0.0],
+        };
+
+        for i in 0..NUM_INDICES / 2 {
+            indices[2 * i] = i / 2;
+            indices[2 * i + 1] = i + 1;
+        }
 
         let vertex_buffer = device.create_buffer_init(&BufferInitDescriptor {
             label: Some("Vertex Buffer"),
@@ -134,33 +231,58 @@ impl State {
             usage: BufferUsages::VERTEX | BufferUsages::STORAGE,
         });
 
-        let index_buffer = device.create_buffer_init(&BufferInitDescriptor {
-            label: Some("Index Buffer"),
-            contents: bytemuck::cast_slice(INDICES),
-            usage: BufferUsages::INDEX,
+        let color_uniform_buffer = device.create_buffer_init(&BufferInitDescriptor {
+            label: Some("Color Uniform Buffer"),
+            contents: bytemuck::cast_slice(&color),
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST | BufferUsages::STORAGE,
         });
 
-        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Bind Group Layout"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: false },
-                    has_dynamic_offset: false,
-                    min_binding_size: Some(NUM_VERTICES),
-                },
-                count: None,
-            }],
-        });
-
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Bind Group"),
-            layout: &bind_group_layout,
+        let render_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Render Bind Group"),
+            layout: &render_bind_group_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
-                resource: vertex_buffer.as_entire_binding(),
+                resource: color_uniform_buffer.as_entire_binding(),
             }],
+        });
+
+        vertices[0] = Vertex { position: [0.0; 2] };
+
+        let direction_buffer = device.create_buffer_init(&BufferInitDescriptor {
+            label: Some("Direction Buffer"),
+            contents: bytemuck::cast_slice(&vertices),
+            usage: BufferUsages::STORAGE,
+        });
+
+        let direction_uniform_buffer = device.create_buffer_init(&BufferInitDescriptor {
+            label: Some("Direction Uniform Buffer"),
+            contents: bytemuck::cast_slice(&direction),
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST | BufferUsages::STORAGE,
+        });
+
+        let compute_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Compute Bind Group"),
+            layout: &compute_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: vertex_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: direction_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: direction_uniform_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        let index_buffer = device.create_buffer_init(&BufferInitDescriptor {
+            label: Some("Index Buffer"),
+            contents: bytemuck::cast_slice(&indices),
+            usage: BufferUsages::INDEX,
         });
 
         Self {
@@ -171,9 +293,14 @@ impl State {
             config,
             size,
             render_pipeline,
+            compute_pipeline,
             vertex_buffer,
             index_buffer,
-            bind_group,
+            direction_buffer,
+            compute_bind_group,
+            render_bind_group,
+            direction_uniform_buffer,
+            color_uniform_buffer,
         }
     }
 
@@ -194,18 +321,6 @@ impl State {
         }
     }
 
-    pub fn input(&mut self, event: &WindowEvent) -> bool {
-        match event {
-            _ => return true,
-        }
-
-        false
-    }
-
-    pub fn update(&mut self) {
-        // TODO
-    }
-
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         let output = self.surface.get_current_texture()?;
         let view = output.texture.create_view(&Default::default());
@@ -217,6 +332,15 @@ impl State {
             });
 
         {
+            let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Compute Pass"),
+            });
+            compute_pass.set_pipeline(&self.compute_pipeline);
+            compute_pass.set_bind_group(0, &self.compute_bind_group, &[]);
+            compute_pass.dispatch_workgroups(WORK_GROUP_COUNT, 1, 1);
+        }
+
+        {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -224,9 +348,9 @@ impl State {
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.1,
-                            g: 0.2,
-                            b: 0.3,
+                            r: BACKGROUND_COLOR[0],
+                            g: BACKGROUND_COLOR[1],
+                            b: BACKGROUND_COLOR[2],
                             a: 1.0,
                         }),
                         store: true,
@@ -236,12 +360,13 @@ impl State {
             });
 
             render_pass.set_pipeline(&self.render_pipeline);
+            render_pass.set_bind_group(0, &self.render_bind_group, &[]);
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-            render_pass.draw_indexed(0..INDICES.len() as u32, 0, 0..1);
+            render_pass.draw_indexed(0..NUM_INDICES as u32, 0, 0..1);
         }
 
-        self.queue.submit(std::iter::once(encoder.finish()));
+        self.queue.submit(Some(encoder.finish()));
 
         output.present();
 
