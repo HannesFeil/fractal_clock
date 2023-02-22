@@ -1,4 +1,3 @@
-#![allow(clippy::extra_unused_type_parameters)]
 use std::ops::{Add, Mul};
 
 use wgpu::{
@@ -7,7 +6,7 @@ use wgpu::{
 };
 use winit::{dpi::PhysicalSize, window::Window};
 
-const NUM_VERTICES: usize = 1 + 2_usize.pow(6);
+const NUM_VERTICES: usize = 2_usize.pow(7) - 1; //FIXME Something is wrong
 const NUM_INDICES: usize = (NUM_VERTICES - 1) * 2;
 
 const BACKGROUND_COLOR: [f64; 3] = [0.0, 0.0, 0.0];
@@ -219,12 +218,10 @@ impl State {
             indices[2 * i + 1] = (i + 1) as u32;
         }
 
-        println!("{:?}", &indices[..20]);
-
         let vertex_buffer = device.create_buffer_init(&BufferInitDescriptor {
             label: Some("Vertex Buffer"),
             contents: bytemuck::cast_slice(&vertices),
-            usage: BufferUsages::VERTEX | BufferUsages::STORAGE | BufferUsages::COPY_DST,
+            usage: BufferUsages::VERTEX | BufferUsages::COPY_DST | BufferUsages::STORAGE,
         });
 
         let render_uniform_buffer = device.create_buffer_init(&BufferInitDescriptor {
@@ -245,7 +242,7 @@ impl State {
         let direction_buffer = device.create_buffer_init(&BufferInitDescriptor {
             label: Some("Direction Buffer"),
             contents: bytemuck::cast_slice(&directions),
-            usage: BufferUsages::STORAGE,
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
         });
 
         let compute_uniform_buffer = device.create_buffer_init(&BufferInitDescriptor {
@@ -319,8 +316,8 @@ impl State {
         let output = self.surface.get_current_texture()?;
         let view = output.texture.create_view(&Default::default());
 
-        let hour_angle = 0.5_f32;
-        let minute_angle = 0.2_f32;
+        let hour_angle = std::f32::consts::PI / 4.0;
+        let minute_angle = 0.0_f32;
 
         let shrinking_factor = 0.5;
 
@@ -355,12 +352,26 @@ impl State {
         self.queue
             .write_buffer(&self.direction_buffer, 0, bytemuck::cast_slice(&directions));
 
+        self.queue.write_buffer(
+            &self.compute_uniform_buffer,
+            0,
+            bytemuck::cast_slice(&[ComputeUniform {
+                hour: hour_vertex,
+                minute: minute_vertex,
+                input_offset: (WORK_GROUP_SIZE / 2) as u32,
+                output_offset: WORK_GROUP_SIZE as u32,
+            }]),
+        );
+
+        self.queue.submit(None);
+
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Render encoder"),
             });
 
+        encoder.push_debug_group("Computing");
         {
             let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("Compute Pass"),
@@ -369,7 +380,8 @@ impl State {
             compute_pass.set_bind_group(0, &self.compute_bind_group, &[]);
             compute_pass.dispatch_workgroups(WORK_GROUP_COUNT, 1, 1);
         }
-
+        encoder.pop_debug_group();
+        encoder.push_debug_group("Rendering");
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Render Pass"),
@@ -395,6 +407,7 @@ impl State {
             render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             render_pass.draw_indexed(0..NUM_INDICES as u32, 0, 0..1);
         }
+        encoder.pop_debug_group();
 
         self.queue.submit(Some(encoder.finish()));
 
@@ -452,8 +465,8 @@ impl Mul for Vertex {
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct ComputeUniform {
-    hour: [f32; 2],
-    minute: [f32; 2],
+    hour: Vertex,
+    minute: Vertex,
     input_offset: u32,
     output_offset: u32,
 }
