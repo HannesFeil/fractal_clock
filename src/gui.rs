@@ -6,7 +6,7 @@ use wgpu::{
 };
 use winit::{dpi::PhysicalSize, window::Window};
 
-const NUM_VERTICES: usize = 2_usize.pow(7) - 1; //FIXME Something is wrong
+const NUM_VERTICES: usize = 2_usize.pow(8) - 1;
 const NUM_INDICES: usize = (NUM_VERTICES - 1) * 2;
 
 const BACKGROUND_COLOR: [f64; 3] = [0.0, 0.0, 0.0];
@@ -316,7 +316,7 @@ impl State {
         let output = self.surface.get_current_texture()?;
         let view = output.texture.create_view(&Default::default());
 
-        let hour_angle = std::f32::consts::PI / 4.0;
+        let hour_angle = std::f32::consts::PI / 2.0;
         let minute_angle = 0.0_f32;
 
         let shrinking_factor = 0.5;
@@ -332,7 +332,7 @@ impl State {
         directions[0] = hour_vertex;
         directions[1] = minute_vertex;
 
-        for i in 0..WORK_GROUP_SIZE / 2 {
+        for i in 0..WORK_GROUP_SIZE - 1 {
             vertices[i * 2 + 1] = vertices[i] + directions[i * 2];
             vertices[i * 2 + 2] = vertices[i] + directions[i * 2 + 1];
 
@@ -358,12 +358,10 @@ impl State {
             bytemuck::cast_slice(&[ComputeUniform {
                 hour: hour_vertex,
                 minute: minute_vertex,
-                input_offset: (WORK_GROUP_SIZE / 2) as u32,
-                output_offset: WORK_GROUP_SIZE as u32,
+                input_offset: (WORK_GROUP_SIZE - 1) as u32,
+                output_offset: (WORK_GROUP_SIZE * 2 - 2) as u32,
             }]),
         );
-
-        self.queue.submit(None);
 
         let mut encoder = self
             .device
