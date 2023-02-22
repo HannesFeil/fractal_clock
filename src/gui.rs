@@ -8,7 +8,7 @@ use wgpu::{
 };
 use winit::{dpi::PhysicalSize, window::Window};
 
-const RECURSION_DEPTH: usize = 9;
+const RECURSION_DEPTH: usize = 10;
 const NUM_VERTICES: usize = 2_usize.pow(RECURSION_DEPTH as u32) - 1;
 const NUM_INDICES: usize = (NUM_VERTICES - 1) * 2;
 
@@ -396,13 +396,14 @@ impl State {
             bytemuck::cast_slice(&compute_uniforms),
         );
 
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Compute encoder"),
+            });
+
+        encoder.push_debug_group("Computing");
         for i in 0..(RECURSION_DEPTH - WORK_GROUP_INITIAL_RECURSION_DEPTH) as u32 {
-            let mut encoder = self
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("Compute encoder"),
-                });
-            encoder.push_debug_group("Computing");
             {
                 let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                     label: Some("Compute Pass"),
@@ -419,12 +420,12 @@ impl State {
                 ); */
                 compute_pass.dispatch_workgroups(2_u32.pow(i), 1, 1);
             }
-            encoder.pop_debug_group();
-
-            self.queue.submit(Some(encoder.finish()));
 
             offset += compute_offset as u32;
         }
+        encoder.pop_debug_group();
+
+        self.queue.submit(Some(encoder.finish()));
 
         let mut encoder = self
             .device
