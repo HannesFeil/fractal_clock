@@ -1,3 +1,5 @@
+#![allow(clippy::extra_unused_type_parameters)]
+
 use std::ops::{Add, Mul};
 
 use wgpu::{
@@ -6,13 +8,14 @@ use wgpu::{
 };
 use winit::{dpi::PhysicalSize, window::Window};
 
-const NUM_VERTICES: usize = 2_usize.pow(8) - 1;
+const RECURSION_DEPTH: usize = 9;
+const NUM_VERTICES: usize = 2_usize.pow(RECURSION_DEPTH as u32) - 1;
 const NUM_INDICES: usize = (NUM_VERTICES - 1) * 2;
 
 const BACKGROUND_COLOR: [f64; 3] = [0.0, 0.0, 0.0];
 
-const WORK_GROUP_SIZE: usize = 2_usize.pow(6);
-const WORK_GROUP_COUNT: u32 = 1;
+const WORK_GROUP_INITIAL_RECURSION_DEPTH: usize = 7;
+const WORK_GROUP_SIZE: usize = 2_usize.pow(WORK_GROUP_INITIAL_RECURSION_DEPTH as u32 - 1);
 
 const MIN_BUFFER_SIZE: usize = 2056;
 
@@ -126,7 +129,7 @@ impl State {
                         visibility: wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
+                            has_dynamic_offset: true,
                             min_binding_size: None,
                         },
                         count: None,
@@ -265,7 +268,15 @@ impl State {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: compute_uniform_buffer.as_entire_binding(),
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &compute_uniform_buffer,
+                        offset: 0,
+                        size: Some(
+                            (std::mem::size_of::<ComputeUniform>() as u64)
+                                .try_into()
+                                .unwrap(),
+                        ),
+                    }),
                 },
             ],
         });
@@ -352,16 +363,59 @@ impl State {
         self.queue
             .write_buffer(&self.direction_buffer, 0, bytemuck::cast_slice(&directions));
 
+        let compute_offset = std::mem::size_of::<ComputeUniform>()
+            .next_multiple_of(wgpu::Limits::default().min_uniform_buffer_offset_alignment as usize);
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Compute encoder"),
+            });
+
+        let mut compute_uniforms: Vec<u8> = Vec::with_capacity(
+            compute_offset / 8 * (RECURSION_DEPTH - WORK_GROUP_INITIAL_RECURSION_DEPTH),
+        );
+
+        let mut input_offset = (WORK_GROUP_SIZE - 1) as u32;
+
+        for _ in 0..RECURSION_DEPTH - WORK_GROUP_INITIAL_RECURSION_DEPTH {
+            let uniform = ComputeUniform {
+                hour: hour_vertex,
+                minute: minute_vertex,
+                input_offset,
+                output_offset: input_offset * 2,
+            };
+            input_offset *= 2;
+
+            compute_uniforms.extend_from_slice(bytemuck::bytes_of(&uniform));
+            compute_uniforms.extend(
+                std::iter::repeat(0)
+                    .take(compute_offset / 8 - std::mem::size_of::<ComputeUniform>()),
+            )
+        }
+
+        let mut offset = 0;
+
         self.queue.write_buffer(
             &self.compute_uniform_buffer,
             0,
-            bytemuck::cast_slice(&[ComputeUniform {
-                hour: hour_vertex,
-                minute: minute_vertex,
-                input_offset: (WORK_GROUP_SIZE - 1) as u32,
-                output_offset: (WORK_GROUP_SIZE * 2 - 2) as u32,
-            }]),
+            bytemuck::cast_slice(&compute_uniforms),
         );
+
+        encoder.push_debug_group("Computing");
+        for i in 0..(RECURSION_DEPTH - WORK_GROUP_INITIAL_RECURSION_DEPTH) as u32 {
+            let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Compute Pass"),
+            });
+            compute_pass.set_pipeline(&self.compute_pipeline);
+
+            compute_pass.set_bind_group(0, &self.compute_bind_group, &[offset]);
+            compute_pass.dispatch_workgroups(2_u32.pow(i), 1, 1);
+            offset += compute_offset as u32;
+        }
+        encoder.pop_debug_group();
+
+        self.queue.submit(Some(encoder.finish()));
 
         let mut encoder = self
             .device
@@ -369,16 +423,6 @@ impl State {
                 label: Some("Render encoder"),
             });
 
-        encoder.push_debug_group("Computing");
-        {
-            let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("Compute Pass"),
-            });
-            compute_pass.set_pipeline(&self.compute_pipeline);
-            compute_pass.set_bind_group(0, &self.compute_bind_group, &[]);
-            compute_pass.dispatch_workgroups(WORK_GROUP_COUNT, 1, 1);
-        }
-        encoder.pop_debug_group();
         encoder.push_debug_group("Rendering");
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

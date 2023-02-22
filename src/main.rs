@@ -1,3 +1,5 @@
+#![feature(int_roundings)]
+
 use gui::State;
 use winit::{event::*, event_loop::EventLoop, window::WindowBuilder};
 
