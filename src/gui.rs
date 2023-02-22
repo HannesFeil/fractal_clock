@@ -181,7 +181,7 @@ impl State {
                 entry_point: "fs_main",
                 targets: &[Some(wgpu::ColorTargetState {
                     format: config.format,
-                    blend: Some(wgpu::BlendState::REPLACE),
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
@@ -353,7 +353,7 @@ impl State {
             directions[i * 4 + 5] = directions[i * 2 + 1] * minute_vertex;
         }
 
-        let color: [f32; 4] = [0.2, 1.0, 0.2, 1.0];
+        let color: [f32; 4] = [0.2, 1.0, 0.2, 0.25];
 
         self.queue
             .write_buffer(&self.render_uniform_buffer, 0, bytemuck::cast_slice(&color));
@@ -365,12 +365,6 @@ impl State {
 
         let compute_offset = std::mem::size_of::<ComputeUniform>()
             .next_multiple_of(wgpu::Limits::default().min_uniform_buffer_offset_alignment as usize);
-
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Compute encoder"),
-            });
 
         let mut compute_uniforms: Vec<u8> = Vec::with_capacity(
             compute_offset / 8 * (RECURSION_DEPTH - WORK_GROUP_INITIAL_RECURSION_DEPTH),
@@ -402,20 +396,35 @@ impl State {
             bytemuck::cast_slice(&compute_uniforms),
         );
 
-        encoder.push_debug_group("Computing");
         for i in 0..(RECURSION_DEPTH - WORK_GROUP_INITIAL_RECURSION_DEPTH) as u32 {
-            let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("Compute Pass"),
-            });
-            compute_pass.set_pipeline(&self.compute_pipeline);
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Compute encoder"),
+                });
+            encoder.push_debug_group("Computing");
+            {
+                let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("Compute Pass"),
+                });
+                compute_pass.set_pipeline(&self.compute_pipeline);
 
-            compute_pass.set_bind_group(0, &self.compute_bind_group, &[offset]);
-            compute_pass.dispatch_workgroups(2_u32.pow(i), 1, 1);
+                compute_pass.set_bind_group(0, &self.compute_bind_group, &[offset]);
+                /* println!(
+                    "{:?}",
+                    bytemuck::from_bytes::<ComputeUniform>(
+                        &compute_uniforms[(offset / 8) as usize
+                            ..(offset / 8) as usize + std::mem::size_of::<ComputeUniform>()]
+                    )
+                ); */
+                compute_pass.dispatch_workgroups(2_u32.pow(i), 1, 1);
+            }
+            encoder.pop_debug_group();
+
+            self.queue.submit(Some(encoder.finish()));
+
             offset += compute_offset as u32;
         }
-        encoder.pop_debug_group();
-
-        self.queue.submit(Some(encoder.finish()));
 
         let mut encoder = self
             .device
