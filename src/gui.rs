@@ -8,13 +8,15 @@ use wgpu::{
 };
 use winit::{dpi::PhysicalSize, window::Window};
 
-const RECURSION_DEPTH: usize = 11;
+const RECURSION_DEPTH: usize = 12;
+const WORK_GROUP_INITIAL_RECURSION_DEPTH: usize = 7;
+const COMPUTE_RECURSION_DEPTH: usize = RECURSION_DEPTH - WORK_GROUP_INITIAL_RECURSION_DEPTH;
+
 const NUM_VERTICES: usize = 2_usize.pow(RECURSION_DEPTH as u32) - 1;
 const NUM_INDICES: usize = (NUM_VERTICES - 1) * 2;
 
 const BACKGROUND_COLOR: [f64; 3] = [0.0, 0.0, 0.0];
 
-const WORK_GROUP_INITIAL_RECURSION_DEPTH: usize = 7;
 const WORK_GROUP_SIZE: usize = 2_usize.pow(WORK_GROUP_INITIAL_RECURSION_DEPTH as u32 - 1);
 
 const MIN_BUFFER_SIZE: usize = 2056;
@@ -46,6 +48,7 @@ impl State {
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 compatible_surface: Some(&surface),
+                power_preference: wgpu::PowerPreference::HighPerformance,
                 ..Default::default()
             })
             .await
@@ -54,7 +57,7 @@ impl State {
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
-                    features: wgpu::Features::empty(),
+                    features: wgpu::Features::VERTEX_WRITABLE_STORAGE,
                     // WebGL doesn't support all of wgpu's features, so if
                     // we're building for the web we'll have to disable some.
                     limits: wgpu::Limits::default(),
@@ -103,7 +106,7 @@ impl State {
                             ty: wgpu::BufferBindingType::Storage { read_only: false },
                             has_dynamic_offset: false,
                             min_binding_size: Some(
-                                (NUM_VERTICES as u64 * std::mem::size_of::<Vertex>() as u64)
+                                (NUM_VERTICES as u64 * Vertex::byte_size() as u64)
                                     .try_into()
                                     .expect("NUM_VERTICES should not be 0"),
                             ),
@@ -117,7 +120,7 @@ impl State {
                             ty: wgpu::BufferBindingType::Storage { read_only: false },
                             has_dynamic_offset: false,
                             min_binding_size: Some(
-                                (NUM_VERTICES as u64 * std::mem::size_of::<Vertex>() as u64)
+                                (NUM_VERTICES as u64 * Vertex::byte_size() as u64)
                                     .try_into()
                                     .expect("NUM_VERTICES should not be 0"),
                             ),
@@ -210,27 +213,29 @@ impl State {
             entry_point: "main",
         });
 
-        let vertices = [[0.0; 2]; NUM_VERTICES]; //TODO unnessecary
-        let directions = [[0.0; 2]; NUM_VERTICES * 2];
+        let compute_offset = std::mem::size_of::<ComputeUniform>()
+            .next_multiple_of(wgpu::Limits::default().min_uniform_buffer_offset_alignment as usize);
+
         let mut indices = [0u32; NUM_INDICES];
-        let render_uniform = [0u8; MIN_BUFFER_SIZE];
-        let compute_uniform = [0u8; MIN_BUFFER_SIZE];
+        // let compute_uniform = [0u8; ];
 
         for i in 0..NUM_INDICES / 2 {
             indices[2 * i] = (i / 2) as u32;
             indices[2 * i + 1] = (i + 1) as u32;
         }
 
-        let vertex_buffer = device.create_buffer_init(&BufferInitDescriptor {
+        let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Vertex Buffer"),
-            contents: bytemuck::cast_slice(&vertices),
-            usage: BufferUsages::VERTEX | BufferUsages::COPY_DST | BufferUsages::STORAGE,
+            size: (NUM_VERTICES * Vertex::byte_size()) as u64,
+            usage: BufferUsages::VERTEX | BufferUsages::STORAGE | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
 
-        let render_uniform_buffer = device.create_buffer_init(&BufferInitDescriptor {
-            label: Some("Color Uniform Buffer"),
-            contents: bytemuck::cast_slice(&render_uniform),
-            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST | BufferUsages::STORAGE,
+        let render_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Render Uniform Buffer"),
+            size: MIN_BUFFER_SIZE as u64,
+            usage: BufferUsages::UNIFORM | BufferUsages::STORAGE | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
 
         let render_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -242,16 +247,18 @@ impl State {
             }],
         });
 
-        let direction_buffer = device.create_buffer_init(&BufferInitDescriptor {
+        let direction_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Direction Buffer"),
-            contents: bytemuck::cast_slice(&directions),
+            size: (NUM_VERTICES * 2 * Vertex::byte_size()) as u64,
             usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
 
-        let compute_uniform_buffer = device.create_buffer_init(&BufferInitDescriptor {
-            label: Some("Direction Uniform Buffer"),
-            contents: bytemuck::cast_slice(&compute_uniform),
-            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST | BufferUsages::STORAGE,
+        let compute_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Compute Uniform Buffer"),
+            size: MIN_BUFFER_SIZE.max(compute_offset * COMPUTE_RECURSION_DEPTH) as u64,
+            usage: BufferUsages::UNIFORM | BufferUsages::STORAGE | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
 
         let compute_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -323,25 +330,23 @@ impl State {
         }
     }
 
-    pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
+    pub fn render(
+        &mut self,
+        mut hour: Vertex,
+        mut minute: Vertex,
+    ) -> Result<(), wgpu::SurfaceError> {
         let output = self.surface.get_current_texture()?;
         let view = output.texture.create_view(&Default::default());
 
-        let hour_angle = std::f32::consts::PI / 2.0;
-        let minute_angle = 0.0_f32;
-
         let shrinking_factor = 0.6;
 
-        let mut hour_vertex: Vertex = hour_angle.sin_cos().into();
-        let mut minute_vertex: Vertex = minute_angle.sin_cos().into();
-
-        hour_vertex.scale(shrinking_factor);
-        minute_vertex.scale(shrinking_factor);
+        hour.scale(shrinking_factor);
+        minute.scale(shrinking_factor);
 
         let mut vertices = [Vertex { x: 0.0, y: 0.0 }; NUM_VERTICES]; //TODO unnessecary
         let mut directions = [Vertex { x: 0.0, y: 0.0 }; NUM_VERTICES * 2];
-        directions[0] = hour_vertex;
-        directions[1] = minute_vertex;
+        directions[0] = hour;
+        directions[1] = minute;
 
         directions[0].scale(0.6);
         directions[1].scale(0.6);
@@ -350,10 +355,10 @@ impl State {
             vertices[i * 2 + 1] = vertices[i] + directions[i * 2];
             vertices[i * 2 + 2] = vertices[i] + directions[i * 2 + 1];
 
-            directions[i * 4 + 2] = directions[i * 2] * hour_vertex;
-            directions[i * 4 + 3] = directions[i * 2] * minute_vertex;
-            directions[i * 4 + 4] = directions[i * 2 + 1] * hour_vertex;
-            directions[i * 4 + 5] = directions[i * 2 + 1] * minute_vertex;
+            directions[i * 4 + 2] = directions[i * 2] * hour;
+            directions[i * 4 + 3] = directions[i * 2] * minute;
+            directions[i * 4 + 4] = directions[i * 2 + 1] * hour;
+            directions[i * 4 + 5] = directions[i * 2 + 1] * minute;
         }
 
         let color: [f32; 4] = [0.2, 1.0, 0.2, 0.25];
@@ -370,7 +375,7 @@ impl State {
             .next_multiple_of(wgpu::Limits::default().min_uniform_buffer_offset_alignment as usize);
 
         // let mut compute_uniforms: Vec<u8> = Vec::with_capacity(
-        //     compute_offset * (RECURSION_DEPTH - WORK_GROUP_INITIAL_RECURSION_DEPTH),
+        //     compute_offset * (COMPUTE_RECURSION_DEPTH),
         // );
 
         let mut input_offset = (WORK_GROUP_SIZE - 1) as u32;
@@ -385,7 +390,7 @@ impl State {
             });
 
         encoder.push_debug_group("Computing");
-        for i in 0..(RECURSION_DEPTH - WORK_GROUP_INITIAL_RECURSION_DEPTH) as u32 {
+        for i in 0..(COMPUTE_RECURSION_DEPTH) as u32 {
             {
                 let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                     label: Some("Compute Pass"),
@@ -400,8 +405,8 @@ impl State {
                 &self.compute_uniform_buffer,
                 offset as u64,
                 bytemuck::bytes_of(&ComputeUniform {
-                    hour: hour_vertex,
-                    minute: minute_vertex,
+                    hour: hour,
+                    minute: minute,
                     input_offset,
                     output_offset,
                 }),
@@ -459,15 +464,23 @@ impl State {
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-struct Vertex {
+pub struct Vertex {
     x: f32,
     y: f32,
 }
 
 impl Vertex {
-    fn scale(&mut self, scalar: f32) {
+    const fn byte_size() -> usize {
+        std::mem::size_of::<Vertex>()
+    }
+
+    pub fn scale(&mut self, scalar: f32) {
         self.x *= scalar;
         self.y *= scalar;
+    }
+
+    pub fn len(&self) -> f32 {
+        (self.x.powi(2) + self.y.powi(2)).sqrt()
     }
 }
 
@@ -512,7 +525,7 @@ struct ComputeUniform {
 }
 
 const VERTEY_BUFFER_LAYOUT: wgpu::VertexBufferLayout = wgpu::VertexBufferLayout {
-    array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
+    array_stride: Vertex::byte_size() as wgpu::BufferAddress,
     step_mode: wgpu::VertexStepMode::Vertex,
     attributes: &wgpu::vertex_attr_array![0 => Float32x2],
 };

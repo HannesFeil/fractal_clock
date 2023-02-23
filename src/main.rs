@@ -1,6 +1,6 @@
 #![feature(int_roundings)]
 
-use gui::State;
+use gui::{State, Vertex};
 use winit::{event::*, event_loop::EventLoop, window::WindowBuilder};
 
 mod gui;
@@ -17,6 +17,11 @@ pub async fn run() {
 
     let mut state = State::new(window).await;
 
+    let mut hour: Vertex = (1.0, 0.0).into();
+    let mut minute: Vertex = (1.0, 0.0).into();
+
+    let mut cursor_buttons = (false, false);
+
     event_loop.run(move |event, _, control_flow| match event {
         Event::WindowEvent {
             ref event,
@@ -27,10 +32,34 @@ pub async fn run() {
             WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
                 state.resize(**new_inner_size)
             }
+            WindowEvent::CursorMoved { position, .. } => {
+                let normalized_pos = (
+                    -(position.y as f32 / state.size().height as f32 - 0.5),
+                    position.x as f32 / state.size().width as f32 - 0.5,
+                );
+
+                if cursor_buttons.0 {
+                    hour = normalized_pos.into();
+                }
+                if cursor_buttons.1 {
+                    minute = normalized_pos.into();
+                }
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                let pressed = matches!(state, ElementState::Pressed);
+                match button {
+                    MouseButton::Left => cursor_buttons.0 = pressed,
+                    MouseButton::Right => cursor_buttons.1 = pressed,
+                    _ => {}
+                }
+            }
             _ => {}
         },
         Event::RedrawRequested(window_id) if window_id == state.window().id() => {
-            match state.render() {
+            hour.scale(1.0 / hour.len());
+            minute.scale(1.0 / minute.len());
+
+            match state.render(hour, minute) {
                 Ok(()) => {}
                 Err(wgpu::SurfaceError::Lost) => state.resize(state.size()),
                 Err(wgpu::SurfaceError::OutOfMemory) => control_flow.set_exit(),
