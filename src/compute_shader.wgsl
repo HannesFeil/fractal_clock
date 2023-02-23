@@ -24,6 +24,10 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 
     vertices[new_index] = parent + dirs.xy;
     vertices[new_index + 1u] = parent + dirs.zw;
-    directions[new_index] = vec4(dirs.xy * input.hour, dirs.xy * input.minute);
-    directions[new_index + 1u] = vec4(dirs.zw * input.hour, dirs.zw * input.minute);
+    directions[new_index] = vec4(multiply(dirs.xy, input.hour), multiply(dirs.xy, input.minute));
+    directions[new_index + 1u] = vec4(multiply(dirs.zw, input.hour), multiply(dirs.zw, input.minute));
+}
+
+fn multiply(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
+    return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
 }

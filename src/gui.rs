@@ -8,7 +8,7 @@ use wgpu::{
 };
 use winit::{dpi::PhysicalSize, window::Window};
 
-const RECURSION_DEPTH: usize = 10;
+const RECURSION_DEPTH: usize = 11;
 const NUM_VERTICES: usize = 2_usize.pow(RECURSION_DEPTH as u32) - 1;
 const NUM_INDICES: usize = (NUM_VERTICES - 1) * 2;
 
@@ -330,7 +330,7 @@ impl State {
         let hour_angle = std::f32::consts::PI / 2.0;
         let minute_angle = 0.0_f32;
 
-        let shrinking_factor = 0.5;
+        let shrinking_factor = 0.6;
 
         let mut hour_vertex: Vertex = hour_angle.sin_cos().into();
         let mut minute_vertex: Vertex = minute_angle.sin_cos().into();
@@ -342,6 +342,9 @@ impl State {
         let mut directions = [Vertex { x: 0.0, y: 0.0 }; NUM_VERTICES * 2];
         directions[0] = hour_vertex;
         directions[1] = minute_vertex;
+
+        directions[0].scale(0.6);
+        directions[1].scale(0.6);
 
         for i in 0..WORK_GROUP_SIZE - 1 {
             vertices[i * 2 + 1] = vertices[i] + directions[i * 2];
@@ -366,35 +369,14 @@ impl State {
         let compute_offset = std::mem::size_of::<ComputeUniform>()
             .next_multiple_of(wgpu::Limits::default().min_uniform_buffer_offset_alignment as usize);
 
-        let mut compute_uniforms: Vec<u8> = Vec::with_capacity(
-            compute_offset / 8 * (RECURSION_DEPTH - WORK_GROUP_INITIAL_RECURSION_DEPTH),
-        );
+        // let mut compute_uniforms: Vec<u8> = Vec::with_capacity(
+        //     compute_offset * (RECURSION_DEPTH - WORK_GROUP_INITIAL_RECURSION_DEPTH),
+        // );
 
         let mut input_offset = (WORK_GROUP_SIZE - 1) as u32;
-
-        for _ in 0..RECURSION_DEPTH - WORK_GROUP_INITIAL_RECURSION_DEPTH {
-            let uniform = ComputeUniform {
-                hour: hour_vertex,
-                minute: minute_vertex,
-                input_offset,
-                output_offset: input_offset * 2,
-            };
-            input_offset *= 2;
-
-            compute_uniforms.extend_from_slice(bytemuck::bytes_of(&uniform));
-            compute_uniforms.extend(
-                std::iter::repeat(0)
-                    .take(compute_offset / 8 - std::mem::size_of::<ComputeUniform>()),
-            )
-        }
+        let mut output_offset = input_offset * 2;
 
         let mut offset = 0;
-
-        self.queue.write_buffer(
-            &self.compute_uniform_buffer,
-            0,
-            bytemuck::cast_slice(&compute_uniforms),
-        );
 
         let mut encoder = self
             .device
@@ -411,15 +393,21 @@ impl State {
                 compute_pass.set_pipeline(&self.compute_pipeline);
 
                 compute_pass.set_bind_group(0, &self.compute_bind_group, &[offset]);
-                /* println!(
-                    "{:?}",
-                    bytemuck::from_bytes::<ComputeUniform>(
-                        &compute_uniforms[(offset / 8) as usize
-                            ..(offset / 8) as usize + std::mem::size_of::<ComputeUniform>()]
-                    )
-                ); */
                 compute_pass.dispatch_workgroups(2_u32.pow(i), 1, 1);
             }
+
+            self.queue.write_buffer(
+                &self.compute_uniform_buffer,
+                offset as u64,
+                bytemuck::bytes_of(&ComputeUniform {
+                    hour: hour_vertex,
+                    minute: minute_vertex,
+                    input_offset,
+                    output_offset,
+                }),
+            );
+            input_offset += WORK_GROUP_SIZE as u32 * 2_u32.pow(i);
+            output_offset += WORK_GROUP_SIZE as u32 * 2_u32.pow(i + 1);
 
             offset += compute_offset as u32;
         }
