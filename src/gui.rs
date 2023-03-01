@@ -1,5 +1,3 @@
-#![allow(clippy::extra_unused_type_parameters)]
-
 use std::ops::{Add, Mul};
 
 use wgpu::{
@@ -8,7 +6,7 @@ use wgpu::{
 };
 use winit::{dpi::PhysicalSize, window::Window};
 
-const RECURSION_DEPTH: usize = 12;
+const RECURSION_DEPTH: usize = 18;
 const WORK_GROUP_INITIAL_RECURSION_DEPTH: usize = 7;
 const COMPUTE_RECURSION_DEPTH: usize = RECURSION_DEPTH - WORK_GROUP_INITIAL_RECURSION_DEPTH;
 
@@ -20,6 +18,11 @@ const BACKGROUND_COLOR: [f64; 3] = [0.0, 0.0, 0.0];
 const WORK_GROUP_SIZE: usize = 2_usize.pow(WORK_GROUP_INITIAL_RECURSION_DEPTH as u32 - 1);
 
 const MIN_BUFFER_SIZE: usize = 2056;
+
+const SCALE: f32 = 0.25;
+const HOUR_SCALE: f32 = 0.5;
+const SHRINKING_FACTOR: f32 = 0.75;
+const TRANSPARENCY: f32 = 0.1;
 
 pub struct State {
     window: winit::window::Window,
@@ -73,12 +76,7 @@ impl State {
         // Shader code in this tutorial assumes an sRGB surface texture. Using a different
         // one will result all the colors coming out darker. If you want to support non
         // sRGB surfaces, you'll need to account for that when drawing to the frame.
-        let surface_format = surface_caps
-            .formats
-            .iter()
-            .find(|f| f.describe().srgb)
-            .cloned()
-            .unwrap_or(surface_caps.formats[0]);
+        let surface_format = *surface_caps.formats.first().unwrap();
 
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -152,13 +150,11 @@ impl State {
                 label: Some("Render Bind Group Layout"),
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
-                        min_binding_size: Some(
-                            (std::mem::size_of::<[f32; 4]>() as u64).try_into().unwrap(),
-                        ),
+                        min_binding_size: None,
                     },
                     count: None,
                 }],
@@ -184,7 +180,18 @@ impl State {
                 entry_point: "fs_main",
                 targets: &[Some(wgpu::ColorTargetState {
                     format: config.format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    blend: Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::SrcAlpha,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::SrcAlpha,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                    }),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
@@ -338,18 +345,16 @@ impl State {
         let output = self.surface.get_current_texture()?;
         let view = output.texture.create_view(&Default::default());
 
-        let shrinking_factor = 0.6;
-
-        hour.scale(shrinking_factor);
-        minute.scale(shrinking_factor);
-
         let mut vertices = [Vertex { x: 0.0, y: 0.0 }; NUM_VERTICES]; //TODO unnessecary
         let mut directions = [Vertex { x: 0.0, y: 0.0 }; NUM_VERTICES * 2];
         directions[0] = hour;
         directions[1] = minute;
 
-        directions[0].scale(0.6);
-        directions[1].scale(0.6);
+        directions[0].scale(SCALE * HOUR_SCALE);
+        directions[1].scale(SCALE);
+
+        hour.scale(SHRINKING_FACTOR);
+        minute.scale(SHRINKING_FACTOR);
 
         for i in 0..WORK_GROUP_SIZE - 1 {
             vertices[i * 2 + 1] = vertices[i] + directions[i * 2];
@@ -361,10 +366,19 @@ impl State {
             directions[i * 4 + 5] = directions[i * 2 + 1] * minute;
         }
 
-        let color: [f32; 4] = [0.2, 1.0, 0.2, 0.25];
+        let render_uniform: [f32; 5] = [
+            0.0,
+            1.0,
+            0.0,
+            TRANSPARENCY,
+            self.window.inner_size().height as f32 / self.window.inner_size().width as f32,
+        ];
 
-        self.queue
-            .write_buffer(&self.render_uniform_buffer, 0, bytemuck::cast_slice(&color));
+        self.queue.write_buffer(
+            &self.render_uniform_buffer,
+            0,
+            bytemuck::cast_slice(&render_uniform),
+        );
 
         self.queue
             .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
@@ -405,8 +419,8 @@ impl State {
                 &self.compute_uniform_buffer,
                 offset as u64,
                 bytemuck::bytes_of(&ComputeUniform {
-                    hour: hour,
-                    minute: minute,
+                    hour,
+                    minute,
                     input_offset,
                     output_offset,
                 }),
@@ -417,14 +431,6 @@ impl State {
             offset += compute_offset as u32;
         }
         encoder.pop_debug_group();
-
-        self.queue.submit(Some(encoder.finish()));
-
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Render encoder"),
-            });
 
         encoder.push_debug_group("Rendering");
         {
@@ -438,7 +444,7 @@ impl State {
                             r: BACKGROUND_COLOR[0],
                             g: BACKGROUND_COLOR[1],
                             b: BACKGROUND_COLOR[2],
-                            a: 1.0,
+                            a: 0.0,
                         }),
                         store: true,
                     },

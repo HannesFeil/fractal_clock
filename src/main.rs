@@ -1,11 +1,15 @@
 #![feature(int_roundings)]
 
 use gui::{State, Vertex};
-use winit::{event::*, event_loop::EventLoop, window::WindowBuilder};
+use winit::{
+    event::{ElementState, Event, MouseButton, WindowEvent},
+    event_loop::EventLoop,
+    window::WindowBuilder,
+};
 
 mod gui;
 
-fn main() {
+fn  main() {
     pollster::block_on(run());
 }
 
