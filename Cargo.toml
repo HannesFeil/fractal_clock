@@ -11,3 +11,4 @@ log = "0.4"
 wgpu = "0.15"
 pollster = "0.2"
 bytemuck = { version = "1.13.0", features = ["derive"] }
+image = "0.24.5"

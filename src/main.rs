@@ -1,4 +1,6 @@
 #![feature(int_roundings)]
+#![feature(array_chunks)]
+#![cfg(target_pointer_width = "64")]
 
 use gui::{State, Vertex};
 use winit::{
@@ -9,17 +11,17 @@ use winit::{
 
 mod gui;
 
-fn  main() {
-    pollster::block_on(run());
+fn main() {
+    run();
 }
 
-pub async fn run() {
+pub fn run() {
     env_logger::init();
 
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new().build(&event_loop).unwrap();
 
-    let mut state = State::new(window).await;
+    let mut state = State::new(window);
 
     let mut hour: Vertex = (1.0, 0.0).into();
     let mut minute: Vertex = (1.0, 0.0).into();
@@ -38,8 +40,8 @@ pub async fn run() {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 let normalized_pos = (
-                    -(position.y as f32 / state.size().height as f32 - 0.5),
-                    position.x as f32 / state.size().width as f32 - 0.5,
+                    -(position.y as f32 / state.window().inner_size().height as f32 - 0.5),
+                    position.x as f32 / state.window().inner_size().width as f32 - 0.5,
                 );
 
                 if cursor_buttons.0 {
@@ -63,9 +65,14 @@ pub async fn run() {
             hour.scale(1.0 / hour.len());
             minute.scale(1.0 / minute.len());
 
-            match state.render(hour, minute) {
+            match state.render(
+                hour,
+                minute,
+                state.window().inner_size().height as f32
+                    / state.window().inner_size().width as f32,
+            ) {
                 Ok(()) => {}
-                Err(wgpu::SurfaceError::Lost) => state.resize(state.size()),
+                Err(wgpu::SurfaceError::Lost) => state.resize(state.window().inner_size()),
                 Err(wgpu::SurfaceError::OutOfMemory) => control_flow.set_exit(),
                 Err(e) => eprintln!("{e:?}"),
             }

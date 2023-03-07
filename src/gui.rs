@@ -1,32 +1,39 @@
 use std::ops::{Add, Mul};
 
-use wgpu::{
-    util::{BufferInitDescriptor, DeviceExt},
-    BufferUsages,
-};
+use wgpu::BufferUsages;
 use winit::{dpi::PhysicalSize, window::Window};
 
-const RECURSION_DEPTH: usize = 18;
-const WORK_GROUP_INITIAL_RECURSION_DEPTH: usize = 7;
+/// Total recursion depth
+const RECURSION_DEPTH: usize = 23;
+
+/// Initial recursion depth, depending on work group size
+const WORK_GROUP_INITIAL_RECURSION_DEPTH: usize = 9;
+const WORK_GROUP_SIZE: usize = 2_usize.pow(WORK_GROUP_INITIAL_RECURSION_DEPTH as u32 - 1);
+
 const COMPUTE_RECURSION_DEPTH: usize = RECURSION_DEPTH - WORK_GROUP_INITIAL_RECURSION_DEPTH;
 
 const NUM_VERTICES: usize = 2_usize.pow(RECURSION_DEPTH as u32) - 1;
 const NUM_INDICES: usize = (NUM_VERTICES - 1) * 2;
 
-const BACKGROUND_COLOR: [f64; 3] = [0.0, 0.0, 0.0];
-
-const WORK_GROUP_SIZE: usize = 2_usize.pow(WORK_GROUP_INITIAL_RECURSION_DEPTH as u32 - 1);
-
+/// Minimum wgpu uniform buffer size
 const MIN_BUFFER_SIZE: usize = 2056;
 
+const WIDTH: u32 = 1028;
+const HEIGHT: u32 = 720;
+
+const RENDER_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8UnormSrgb;
+
+const BACKGROUND_COLOR: [f64; 4] = [0.0, 0.0, 0.0, 0.0];
+
+/// TODO make variable instead of constants?
 const SCALE: f32 = 0.25;
 const HOUR_SCALE: f32 = 0.5;
 const SHRINKING_FACTOR: f32 = 0.75;
-const TRANSPARENCY: f32 = 0.1;
+const TRANSPARENCY: f32 = 0.005;
 
+/// Container for the rendering pipeline     and window
 pub struct State {
-    window: winit::window::Window,
-    size: winit::dpi::PhysicalSize<u32>,
+    window: Window,
     surface: wgpu::Surface,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -40,42 +47,38 @@ pub struct State {
     compute_uniform_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     render_uniform_buffer: wgpu::Buffer,
+    render_texture: wgpu::Texture,
 }
 
 impl State {
-    pub async fn new(window: Window) -> Self {
+    /// Initializes a new State rendering to the given window
+    pub fn new(window: Window) -> Self {
         let size = window.inner_size();
         let instance = wgpu::Instance::new(Default::default());
         let surface = unsafe { instance.create_surface(&window) }.unwrap();
 
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                compatible_surface: Some(&surface),
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                ..Default::default()
-            })
-            .await
-            .unwrap();
+        // Request any adapter
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            compatible_surface: Some(&surface),
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            ..Default::default()
+        }))
+        .unwrap();
 
-        let (device, queue) = adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    features: wgpu::Features::VERTEX_WRITABLE_STORAGE,
-                    // WebGL doesn't support all of wgpu's features, so if
-                    // we're building for the web we'll have to disable some.
-                    limits: wgpu::Limits::default(),
-                    label: None,
-                },
-                None, // Trace path
-            )
-            .await
-            .unwrap();
+        // request device and queue
+        let (device, queue) = pollster::block_on(adapter.request_device(
+            &wgpu::DeviceDescriptor {
+                features: wgpu::Features::VERTEX_WRITABLE_STORAGE,
+                limits: wgpu::Limits::default(),
+                label: None,
+            },
+            None,
+        ))
+        .unwrap();
 
         let surface_caps = surface.get_capabilities(&adapter);
 
-        // Shader code in this tutorial assumes an sRGB surface texture. Using a different
-        // one will result all the colors coming out darker. If you want to support non
-        // sRGB surfaces, you'll need to account for that when drawing to the frame.
+        // TODO check color format when rendering to texture?
         let surface_format = *surface_caps.formats.first().unwrap();
 
         let config = wgpu::SurfaceConfiguration {
@@ -89,7 +92,8 @@ impl State {
         };
         surface.configure(&device, &config);
 
-        let shader = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
+        // Load shaders
+        let render_shader = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
         let compute_shader =
             device.create_shader_module(wgpu::include_wgsl!("compute_shader.wgsl"));
 
@@ -97,6 +101,7 @@ impl State {
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Bind Group Layout"),
                 entries: &[
+                    // Vertices buffer
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,
                         visibility: wgpu::ShaderStages::COMPUTE,
@@ -111,6 +116,7 @@ impl State {
                         },
                         count: None,
                     },
+                    // Buffer containing directions for calculating vertices
                     wgpu::BindGroupLayoutEntry {
                         binding: 1,
                         visibility: wgpu::ShaderStages::COMPUTE,
@@ -125,6 +131,7 @@ impl State {
                         },
                         count: None,
                     },
+                    // Buffer containing input and output offsets TODO maybe remove completely?
                     wgpu::BindGroupLayoutEntry {
                         binding: 2,
                         visibility: wgpu::ShaderStages::COMPUTE,
@@ -148,16 +155,19 @@ impl State {
         let render_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Render Bind Group Layout"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                entries: &[
+                    // Buffer containing rendering uniforms like color and aspect ratio
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
                     },
-                    count: None,
-                }],
+                ],
             });
 
         let render_pipeline_layout =
@@ -171,23 +181,25 @@ impl State {
             label: Some("Render Pipeline"),
             layout: Some(&render_pipeline_layout),
             vertex: wgpu::VertexState {
-                module: &shader,
+                module: &render_shader,
                 entry_point: "vs_main",
                 buffers: &[VERTEY_BUFFER_LAYOUT],
             },
             fragment: Some(wgpu::FragmentState {
-                module: &shader,
+                module: &render_shader,
                 entry_point: "fs_main",
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: config.format,
-                    blend: Some(wgpu::BlendState {
+                    format: RENDER_FORMAT,
+                    blend:
+                    // Custom blending, this works well?
+                    Some(wgpu::BlendState {
                         color: wgpu::BlendComponent {
                             src_factor: wgpu::BlendFactor::SrcAlpha,
                             dst_factor: wgpu::BlendFactor::One,
                             operation: wgpu::BlendOperation::Add,
                         },
                         alpha: wgpu::BlendComponent {
-                            src_factor: wgpu::BlendFactor::SrcAlpha,
+                            src_factor: wgpu::BlendFactor::One,
                             dst_factor: wgpu::BlendFactor::One,
                             operation: wgpu::BlendOperation::Add,
                         },
@@ -220,16 +232,46 @@ impl State {
             entry_point: "main",
         });
 
+        // dynamic offset steps for the compute uniform buffer
         let compute_offset = std::mem::size_of::<ComputeUniform>()
             .next_multiple_of(wgpu::Limits::default().min_uniform_buffer_offset_alignment as usize);
 
-        let mut indices = [0u32; NUM_INDICES];
-        // let compute_uniform = [0u8; ];
+        let index_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Index Buffer"),
+            usage: BufferUsages::INDEX,
+            size: (NUM_INDICES * std::mem::size_of::<u32>()) as u64,
+            mapped_at_creation: true,
+        });
 
-        for i in 0..NUM_INDICES / 2 {
-            indices[2 * i] = (i / 2) as u32;
-            indices[2 * i + 1] = (i + 1) as u32;
+        // Calculate vertex indices
+        const CHUNK_SIZE: usize = std::mem::size_of::<u32>();
+
+        let mut idx1 = 0_u32;
+        let mut idx2 = 0_u32;
+        let mut par = true;
+
+        for chunk in index_buffer
+            .slice(..)
+            .get_mapped_range_mut()
+            .array_chunks_mut::<CHUNK_SIZE>()
+        {
+            let val = if par {
+                idx1
+            } else {
+                idx2 += 1;
+
+                if idx2 % 2 == 0 {
+                    idx1 += 1;
+                }
+
+                idx2
+            };
+
+            par = !par;
+
+            *chunk = val.to_le_bytes();
         }
+        index_buffer.unmap();
 
         let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Vertex Buffer"),
@@ -295,10 +337,19 @@ impl State {
             ],
         });
 
-        let index_buffer = device.create_buffer_init(&BufferInitDescriptor {
-            label: Some("Index Buffer"),
-            contents: bytemuck::cast_slice(&indices),
-            usage: BufferUsages::INDEX,
+        let render_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Render Texture"),
+            size: wgpu::Extent3d {
+                width: WIDTH,
+                height: HEIGHT,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: RENDER_FORMAT,
+            usage: wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
         });
 
         Self {
@@ -307,16 +358,16 @@ impl State {
             device,
             queue,
             config,
-            size,
             render_pipeline,
             compute_pipeline,
-            vertex_buffer,
-            index_buffer,
-            direction_buffer,
-            compute_bind_group,
             render_bind_group,
+            compute_bind_group,
+            vertex_buffer,
+            direction_buffer,
             compute_uniform_buffer,
+            index_buffer,
             render_uniform_buffer,
+            render_texture,
         }
     }
 
@@ -324,13 +375,8 @@ impl State {
         &self.window
     }
 
-    pub fn size(&self) -> PhysicalSize<u32> {
-        self.size
-    }
-
     pub fn resize(&mut self, size: PhysicalSize<u32>) {
         if size.width > 0 && size.height > 0 {
-            self.size = size;
             self.config.width = size.width;
             self.config.height = size.height;
             self.surface.configure(&self.device, &self.config);
@@ -341,12 +387,20 @@ impl State {
         &mut self,
         mut hour: Vertex,
         mut minute: Vertex,
+        aspect_ratio: f32,
     ) -> Result<(), wgpu::SurfaceError> {
         let output = self.surface.get_current_texture()?;
-        let view = output.texture.create_view(&Default::default());
+        let view = self
+            .render_texture
+            .create_view(&wgpu::TextureViewDescriptor {
+                label: Some("Render View"),
+                aspect: wgpu::TextureAspect::All,
+                ..Default::default()
+            }); // output.texture.create_view(&Default::default());
 
-        let mut vertices = [Vertex { x: 0.0, y: 0.0 }; NUM_VERTICES]; //TODO unnessecary
-        let mut directions = [Vertex { x: 0.0, y: 0.0 }; NUM_VERTICES * 2];
+        // Calculate vertices up to WORK_GROUP_INITIAL_RECURSION_DEPTH
+        let mut vertices = [Vertex { x: 0.0, y: 0.0 }; 2 * WORK_GROUP_SIZE + 1];
+        let mut directions = [Vertex { x: 0.0, y: 0.0 }; 4 * WORK_GROUP_SIZE + 1];
         directions[0] = hour;
         directions[1] = minute;
 
@@ -366,13 +420,7 @@ impl State {
             directions[i * 4 + 5] = directions[i * 2 + 1] * minute;
         }
 
-        let render_uniform: [f32; 5] = [
-            0.0,
-            1.0,
-            0.0,
-            TRANSPARENCY,
-            self.window.inner_size().height as f32 / self.window.inner_size().width as f32,
-        ];
+        let render_uniform: [f32; 5] = [0.0, 1.0, 0.0, TRANSPARENCY, aspect_ratio];
 
         self.queue.write_buffer(
             &self.render_uniform_buffer,
@@ -388,10 +436,6 @@ impl State {
         let compute_offset = std::mem::size_of::<ComputeUniform>()
             .next_multiple_of(wgpu::Limits::default().min_uniform_buffer_offset_alignment as usize);
 
-        // let mut compute_uniforms: Vec<u8> = Vec::with_capacity(
-        //     compute_offset * (COMPUTE_RECURSION_DEPTH),
-        // );
-
         let mut input_offset = (WORK_GROUP_SIZE - 1) as u32;
         let mut output_offset = input_offset * 2;
 
@@ -403,6 +447,7 @@ impl State {
                 label: Some("Compute encoder"),
             });
 
+        // Calculate vertices, recursion layer by layer
         encoder.push_debug_group("Computing");
         for i in 0..(COMPUTE_RECURSION_DEPTH) as u32 {
             {
@@ -432,6 +477,7 @@ impl State {
         }
         encoder.pop_debug_group();
 
+        // Render vertices
         encoder.push_debug_group("Rendering");
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -444,7 +490,7 @@ impl State {
                             r: BACKGROUND_COLOR[0],
                             g: BACKGROUND_COLOR[1],
                             b: BACKGROUND_COLOR[2],
-                            a: 0.0,
+                            a: BACKGROUND_COLOR[3],
                         }),
                         store: true,
                     },
@@ -459,6 +505,8 @@ impl State {
             render_pass.draw_indexed(0..NUM_INDICES as u32, 0, 0..1);
         }
         encoder.pop_debug_group();
+
+        // self.queue.on_submitted_work_done(|| {}); TODO write image to disc
 
         self.queue.submit(Some(encoder.finish()));
 
