@@ -27,8 +27,8 @@ mod constants {
     /// Minimum wgpu uniform buffer size
     pub const MIN_BUFFER_SIZE: usize = 2056;
 
-    pub const WIDTH: u32 = 2000;
-    pub const HEIGHT: u32 = 2000;
+    pub const WIDTH: u32 = 4000;
+    pub const HEIGHT: u32 = 4000;
 
     pub const RENDER_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
     pub const BYTES_PER_PIXEL: u32 = 4;
@@ -42,7 +42,7 @@ mod constants {
     pub const SCALE: f32 = 0.25;
     pub const HOUR_SCALE: f32 = 0.5;
     pub const SHRINKING_FACTOR: f32 = 0.75;
-    pub const TRANSPARENCY: f32 = 0.005;
+    pub const TRANSPARENCY: f32 = 0.025;
 }
 
 fn main() {
