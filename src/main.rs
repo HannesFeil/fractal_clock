@@ -2,12 +2,14 @@
 #![feature(array_chunks)]
 #![cfg(target_pointer_width = "64")]
 
-use gui::{State, Vertex};
+use gui::{FractalClockRenderer, Vertex};
 use winit::{
     event::{ElementState, Event, MouseButton, WindowEvent},
     event_loop::EventLoop,
     window::WindowBuilder,
 };
+
+use crate::constants::{BYTES_PER_PIXEL, RENDER_FORMAT};
 
 mod gui;
 
@@ -27,18 +29,22 @@ mod constants {
     /// Minimum wgpu uniform buffer size
     pub const MIN_BUFFER_SIZE: usize = 2056;
 
-    pub const WIDTH: u32 = 4000;
-    pub const HEIGHT: u32 = 4000;
+    pub const RENDER_SIZE: u32 = 4000;
 
     pub const RENDER_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+
     pub const BYTES_PER_PIXEL: u32 = 4;
-    pub const UNPADDED_BYTES_PER_ROW: u32 = BYTES_PER_PIXEL * WIDTH;
+    pub const UNPADDED_BYTES_PER_ROW: u32 = BYTES_PER_PIXEL * RENDER_SIZE;
     pub const BYTES_PER_ROW: u32 =
         UNPADDED_BYTES_PER_ROW.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
 
-    pub const BACKGROUND_COLOR: [f64; 4] = [0.0, 0.0, 0.0, 0.0];
+    pub const BACKGROUND_COLOR: wgpu::Color = wgpu::Color {
+        r: 0.0,
+        g: 0.0,
+        b: 0.0,
+        a: 0.0,
+    };
 
-    /// TODO make variable instead of constants?
     pub const SCALE: f32 = 0.25;
     pub const HOUR_SCALE: f32 = 0.5;
     pub const SHRINKING_FACTOR: f32 = 0.75;
@@ -46,6 +52,12 @@ mod constants {
 }
 
 fn main() {
+    assert_eq!(
+        BYTES_PER_PIXEL,
+        RENDER_FORMAT.describe().block_size as u32,
+        "BYTES_PER_PIXEL has to match RENDER_FORMAT"
+    );
+
     run();
 }
 
@@ -55,7 +67,7 @@ pub fn run() {
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new().build(&event_loop).unwrap();
 
-    let mut state = State::new(window);
+    let mut state = FractalClockRenderer::new(window);
 
     let mut hour: Vertex = (1.0, 0.0).into();
     let mut minute: Vertex = (1.0, 0.0).into();
@@ -113,9 +125,11 @@ pub fn run() {
             match state.render(
                 hour,
                 minute,
-                constants::WIDTH as f32 / constants::HEIGHT as f32,
+                [0.0, 1.0, 0.0],
+                state.window().inner_size().height as f32
+                    / state.window().inner_size().width as f32,
             ) {
-                Ok(()) => {}
+                Ok(_) => {}
                 Err(wgpu::SurfaceError::Lost) => state.resize(state.window().inner_size()),
                 Err(wgpu::SurfaceError::OutOfMemory) => control_flow.set_exit(),
                 Err(e) => eprintln!("{e:?}"),

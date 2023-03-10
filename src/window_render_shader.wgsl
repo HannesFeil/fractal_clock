@@ -12,6 +12,9 @@ const vertices = array<vec2<f32>, 4>(
     vec2<f32>(-1.0, 1.0),
 );
 
+@group(0) @binding(2)
+var<uniform> aspect_ratio: f32;
+
 @vertex
 fn vs_main(
     @builtin(vertex_index) in_vertex_index: u32,
@@ -29,7 +32,7 @@ fn vs_main(
         default: { pos = vertices[0]; }
     }
 
-    out.clip_position = vec4(pos, 0.0, 1.0);
+    out.clip_position = vec4(pos.x * aspect_ratio, pos.y, 0.0, 1.0);
     out.tex_coords = saturate(vec2(pos.x, -pos.y));
     return out;
 }
