@@ -29,7 +29,7 @@ mod constants {
     /// Minimum wgpu uniform buffer size
     pub const MIN_BUFFER_SIZE: usize = 2056;
 
-    pub const RENDER_SIZE: u32 = 4000;
+    pub const RENDER_SIZE: u32 = 2000;
 
     pub const RENDER_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
@@ -48,7 +48,7 @@ mod constants {
     pub const SCALE: f32 = 0.25;
     pub const HOUR_SCALE: f32 = 0.5;
     pub const SHRINKING_FACTOR: f32 = 0.75;
-    pub const TRANSPARENCY: f32 = 0.025;
+    pub const TRANSPARENCY: f32 = 0.075;
 }
 
 fn main() {
@@ -125,7 +125,7 @@ pub fn run() {
             match state.render(
                 hour,
                 minute,
-                [0.0, 1.0, 0.0],
+                [0.0, 1.0, 0.25],
                 state.window().inner_size().height as f32
                     / state.window().inner_size().width as f32,
             ) {
