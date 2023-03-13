@@ -2,7 +2,11 @@
 #![feature(array_chunks)]
 #![cfg(target_pointer_width = "64")]
 
+use std::time::Duration;
+
+use constants::{END_MILLIS, MILLIS_PER_FRAME, MINUTE_MILLIS, TOTAL_MILLIS};
 use gui::{FractalClockRenderer, Vertex};
+use image::codecs::gif::GifEncoder;
 use winit::{
     event::{ElementState, Event, MouseButton, WindowEvent},
     event_loop::EventLoop,
@@ -49,6 +53,13 @@ mod constants {
     pub const HOUR_SCALE: f32 = 0.5;
     pub const SHRINKING_FACTOR: f32 = 0.75;
     pub const TRANSPARENCY: f32 = 0.075;
+
+    pub const MINUTE_MILLIS: u64 = 60 * 60 * 1000;
+    pub const TOTAL_MILLIS: u64 = 12 * MINUTE_MILLIS;
+
+    pub const START_MILLIS: u64 = 0;
+    pub const END_MILLIS: u64 = 60 * 1000;
+    pub const MILLIS_PER_FRAME: u64 = 100;
 }
 
 fn main() {
@@ -73,6 +84,12 @@ pub fn run() {
     let mut minute: Vertex = (1.0, 0.0).into();
 
     let mut cursor_buttons = (false, false);
+
+    let mut current_millis = constants::START_MILLIS;
+
+    let file = std::fs::File::create("./test.gif").unwrap();
+
+    let mut gif_encoder = GifEncoder::new(file);
 
     event_loop.run(move |event, _, control_flow| match event {
         Event::WindowEvent {
@@ -105,7 +122,7 @@ pub fn run() {
                     _ => {}
                 }
             }
-            WindowEvent::KeyboardInput {
+            /* WindowEvent::KeyboardInput {
                 input:
                     winit::event::KeyboardInput {
                         state: winit::event::ElementState::Pressed,
@@ -114,29 +131,54 @@ pub fn run() {
                     },
                 ..
             } => {
-                state.print_image();
-            }
+                state.create_image().save("./test.gif").unwrap();
+            } */
             _ => {}
         },
-        Event::RedrawRequested(window_id) if window_id == state.window().id() => {
+        Event::MainEventsCleared => {
+            let hour_angle =
+                -2.0 * (current_millis as f32 / TOTAL_MILLIS as f32) * std::f32::consts::PI
+                    + std::f32::consts::FRAC_PI_2;
+
+            let minute_angle = -2.0
+                * ((current_millis % MINUTE_MILLIS) as f32 / MINUTE_MILLIS as f32)
+                * std::f32::consts::PI
+                + std::f32::consts::FRAC_PI_2;
+
+            println!(
+                "current: {current_millis}, hour_angle: {hour_angle}, minute_angle: {minute_angle}"
+            );
+
+            current_millis += MILLIS_PER_FRAME;
+
             hour.scale(1.0 / hour.len());
             minute.scale(1.0 / minute.len());
 
             match state.render(
-                hour,
-                minute,
+                hour_angle.sin_cos().into(),
+                minute_angle.sin_cos().into(),
                 [0.0, 1.0, 0.25],
                 state.window().inner_size().height as f32
                     / state.window().inner_size().width as f32,
             ) {
-                Ok(_) => {}
+                Ok(_) => gif_encoder
+                    .encode_frame(image::Frame::from_parts(
+                        state.create_image(),
+                        0,
+                        0,
+                        image::Delay::from_saturating_duration(Duration::from_millis(
+                            MILLIS_PER_FRAME,
+                        )),
+                    ))
+                    .unwrap(),
                 Err(wgpu::SurfaceError::Lost) => state.resize(state.window().inner_size()),
                 Err(wgpu::SurfaceError::OutOfMemory) => control_flow.set_exit(),
                 Err(e) => eprintln!("{e:?}"),
             }
-        }
-        Event::MainEventsCleared => {
-            state.window().request_redraw();
+
+            if current_millis > END_MILLIS {
+                control_flow.set_exit();
+            }
         }
         _ => {}
     });

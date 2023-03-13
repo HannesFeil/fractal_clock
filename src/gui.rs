@@ -779,8 +779,8 @@ impl FractalClockRenderer {
         Ok(index)
     }
 
-    /// TODO fix this stuff
-    pub fn print_image(&self) {
+    /// Reads from the render_output_buffer after waiting for the most recent submission and returns a [image::RgbImage] created from it.
+    pub fn create_image(&self) -> image::RgbaImage {
         let output_slice = self.buffers.render_output_buffer.slice(..);
 
         let (notifyer, waiter) = oneshot::channel();
@@ -797,31 +797,19 @@ impl FractalClockRenderer {
                 .flat_map(|chunk| {
                     chunk[..UNPADDED_BYTES_PER_ROW as usize]
                         .chunks(BYTES_PER_PIXEL as usize)
-                        .flat_map(|c| c.iter().take(3))
+                        .flat_map(|c| c.iter().take(3).chain(Some(&255)))
                 })
                 .cloned()
                 .collect::<Vec<_>>();
 
-            println!(
-                "{}, {}, {}",
-                image::ColorType::Rgba8.bytes_per_pixel(),
-                BYTES_PER_ROW * RENDER_SIZE,
-                mapped.iter().find(|i| **i != 0).unwrap()
-            );
-
-            let img = image::ImageBuffer::<image::Rgb<u8>, std::vec::Vec<_>>::from_vec(
-                RENDER_SIZE,
-                RENDER_SIZE,
-                unpadded,
-            )
-            .unwrap();
-
-            img.save("./test.png").unwrap();
+            let img = image::RgbaImage::from_vec(RENDER_SIZE, RENDER_SIZE, unpadded).unwrap();
 
             drop(mapped);
             self.buffers.render_output_buffer.unmap();
+
+            img
         } else {
-            println!("Failed to print")
+            panic!("Failed async map on render_output buffer");
         }
     }
 }
