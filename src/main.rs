@@ -2,18 +2,19 @@
 #![feature(array_chunks)]
 #![cfg(target_pointer_width = "64")]
 
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 
 use constants::{END_MILLIS, MILLIS_PER_FRAME, MINUTE_MILLIS, TOTAL_MILLIS};
 use gui::{FractalClockRenderer, Vertex};
-use image::codecs::gif::GifEncoder;
+use ndarray::Array3;
+use video_rs::{Encoder, EncoderSettings, Locator, Time};
 use winit::{
-    event::{ElementState, Event, MouseButton, WindowEvent},
+    event::{Event, WindowEvent},
     event_loop::EventLoop,
     window::WindowBuilder,
 };
 
-use crate::constants::{BYTES_PER_PIXEL, RENDER_FORMAT};
+use crate::constants::{BYTES_PER_PIXEL, RENDER_FORMAT, RENDER_SIZE};
 
 mod gui;
 
@@ -58,7 +59,7 @@ mod constants {
     pub const TOTAL_MILLIS: u64 = 12 * MINUTE_MILLIS;
 
     pub const START_MILLIS: u64 = 0;
-    pub const END_MILLIS: u64 = 60 * 1000;
+    pub const END_MILLIS: u64 = TOTAL_MILLIS;
     pub const MILLIS_PER_FRAME: u64 = 100;
 }
 
@@ -74,6 +75,20 @@ fn main() {
 
 pub fn run() {
     env_logger::init();
+    video_rs::init().unwrap();
+
+    let destination: Locator = PathBuf::from("rainbow.mp4").into();
+    let settings =
+        EncoderSettings::for_h264_yuv420p(RENDER_SIZE as usize, RENDER_SIZE as usize, false);
+
+    let mut encoder = Encoder::new(&destination, settings).expect("failed to create encoder");
+
+    // By determining the duration of each frame, we are essentially determing
+    // the true frame rate of the output video. We choose 24 here.
+    let duration: Time = Duration::from_millis(MILLIS_PER_FRAME).into();
+
+    // Keep track of the current video timestamp.
+    let mut position = Time::zero();
 
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new().build(&event_loop).unwrap();
@@ -83,13 +98,7 @@ pub fn run() {
     let mut hour: Vertex = (1.0, 0.0).into();
     let mut minute: Vertex = (1.0, 0.0).into();
 
-    let mut cursor_buttons = (false, false);
-
     let mut current_millis = constants::START_MILLIS;
-
-    let file = std::fs::File::create("./test.gif").unwrap();
-
-    let mut gif_encoder = GifEncoder::new(file);
 
     event_loop.run(move |event, _, control_flow| match event {
         Event::WindowEvent {
@@ -101,38 +110,6 @@ pub fn run() {
             WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
                 state.resize(**new_inner_size)
             }
-            WindowEvent::CursorMoved { position, .. } => {
-                let normalized_pos = (
-                    -(position.y as f32 / state.window().inner_size().height as f32 - 0.5),
-                    position.x as f32 / state.window().inner_size().width as f32 - 0.5,
-                );
-
-                if cursor_buttons.0 {
-                    hour = normalized_pos.into();
-                }
-                if cursor_buttons.1 {
-                    minute = normalized_pos.into();
-                }
-            }
-            WindowEvent::MouseInput { state, button, .. } => {
-                let pressed = matches!(state, ElementState::Pressed);
-                match button {
-                    MouseButton::Left => cursor_buttons.0 = pressed,
-                    MouseButton::Right => cursor_buttons.1 = pressed,
-                    _ => {}
-                }
-            }
-            /* WindowEvent::KeyboardInput {
-                input:
-                    winit::event::KeyboardInput {
-                        state: winit::event::ElementState::Pressed,
-                        virtual_keycode: Some(winit::event::VirtualKeyCode::Space),
-                        ..
-                    },
-                ..
-            } => {
-                state.create_image().save("./test.gif").unwrap();
-            } */
             _ => {}
         },
         Event::MainEventsCleared => {
@@ -161,16 +138,36 @@ pub fn run() {
                 state.window().inner_size().height as f32
                     / state.window().inner_size().width as f32,
             ) {
-                Ok(_) => gif_encoder
-                    .encode_frame(image::Frame::from_parts(
+                Ok(_) => {
+                    let image = state.create_image();
+
+                    assert_eq!(RENDER_SIZE as usize * RENDER_SIZE as usize * 3, image.len());
+
+                    // This will create a smooth rainbow animation video!
+                    let frame = Array3::from_shape_vec(
+                        (RENDER_SIZE as usize, RENDER_SIZE as usize, 3),
                         state.create_image(),
-                        0,
-                        0,
-                        image::Delay::from_saturating_duration(Duration::from_millis(
-                            MILLIS_PER_FRAME,
-                        )),
-                    ))
-                    .unwrap(),
+                    )
+                    .unwrap();
+
+                    encoder
+                        .encode(&frame, &position)
+                        .expect("failed to encode frame");
+
+                    // Update the current position and add `duration` to it.
+                    position = position.aligned_with(&duration).add();
+
+                    // gif_encoder
+                    //     .encode_frame(image::Frame::from_parts(
+                    //         state.create_image(),
+                    //         0,
+                    //         0,
+                    //         image::Delay::from_saturating_duration(Duration::from_millis(
+                    //             MILLIS_PER_FRAME,
+                    //         )),
+                    //     ))
+                    //     .unwrap()
+                }
                 Err(wgpu::SurfaceError::Lost) => state.resize(state.window().inner_size()),
                 Err(wgpu::SurfaceError::OutOfMemory) => control_flow.set_exit(),
                 Err(e) => eprintln!("{e:?}"),
@@ -179,6 +176,9 @@ pub fn run() {
             if current_millis > END_MILLIS {
                 control_flow.set_exit();
             }
+        }
+        Event::LoopDestroyed => {
+            encoder.finish().expect("failed to finish encoder");
         }
         _ => {}
     });
