@@ -5,33 +5,6 @@ use winit::{dpi::PhysicalSize, window::Window};
 
 use crate::constants::*;
 
-/// Container for the rendering pipeline and related stuff
-///
-/// There are 3 stages in the rendering pipeline:
-/// 1.  Computing the vertices of the fractal
-/// 2.  Drawing lines between the vertices onto the `render_texture`
-/// 3.  Sampling the texture and drawing it to the window
-pub struct FractalClockRenderer {
-    /// window, device, queue etc.
-    state: WGPUState,
-    /// Rendering pipeline
-    render_pipeline: wgpu::RenderPipeline,
-    /// Rendering bindgroup
-    render_bind_group: wgpu::BindGroup,
-    /// Computing pipeline
-    compute_pipeline: wgpu::ComputePipeline,
-    /// Computing bindgroup
-    compute_bind_group: wgpu::BindGroup,
-    /// Window rendering pipeline
-    window_render_pipeline: wgpu::RenderPipeline,
-    /// Window rendering bindgroup
-    window_render_bind_group: wgpu::BindGroup,
-    /// Render target texture
-    render_texture: wgpu::Texture,
-    /// Various [wgpu::Buffer]s
-    buffers: Buffers,
-}
-
 /// Containing wgpu related basic stuff
 struct WGPUState {
     /// The window
@@ -120,17 +93,22 @@ struct Buffers {
 
 impl Buffers {
     /// Creates the buffers with the given device
-    fn new(device: &wgpu::Device) -> Self {
+    fn new(
+        device: &wgpu::Device,
+        render_size: u64,
+        compute_rec_depth: usize,
+        num_vertices: usize,
+    ) -> Self {
         let direction_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Direction Buffer"),
-            size: (NUM_VERTICES * 2 * Vertex::byte_size()) as u64,
+            size: (num_vertices * 2 * Vertex::byte_size()) as u64,
             usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
         let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Vertex Buffer"),
-            size: (NUM_VERTICES * Vertex::byte_size()) as u64,
+            size: (num_vertices * Vertex::byte_size()) as u64,
             usage: BufferUsages::VERTEX | BufferUsages::STORAGE | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -141,7 +119,7 @@ impl Buffers {
 
         let compute_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Compute Uniform Buffer"),
-            size: MIN_BUFFER_SIZE.max(compute_offset * COMPUTE_RECURSION_DEPTH) as u64,
+            size: MIN_BUFFER_SIZE.max(compute_offset * compute_rec_depth) as u64,
             usage: BufferUsages::UNIFORM | BufferUsages::STORAGE | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -149,7 +127,7 @@ impl Buffers {
         let index_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Index Buffer"),
             usage: BufferUsages::INDEX,
-            size: (NUM_INDICES * std::mem::size_of::<u32>()) as u64,
+            size: ((num_vertices - 1) * 2 * std::mem::size_of::<u32>()) as u64,
             mapped_at_creation: true,
         });
 
@@ -199,7 +177,9 @@ impl Buffers {
 
         let render_output_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Render Output Buffer"),
-            size: BYTES_PER_ROW as u64 * RENDER_SIZE as u64,
+            size: (render_size as u32 * BYTES_PER_PIXEL)
+                .next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) as u64
+                * render_size,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
@@ -216,9 +196,40 @@ impl Buffers {
     }
 }
 
+/// Container for the rendering pipeline and related stuff
+///
+/// There are 3 stages in the rendering pipeline:
+/// 1.  Computing the vertices of the fractal
+/// 2.  Drawing lines between the vertices onto the `render_texture`
+/// 3.  Sampling the texture and drawing it to the window
+pub struct FractalClockRenderer {
+    /// width and height of the rendered clock in pixels
+    render_size: u32,
+    /// Total recursion depth
+    recursion_depth: usize,
+    /// window, device, queue etc.
+    state: WGPUState,
+    /// Rendering pipeline
+    render_pipeline: wgpu::RenderPipeline,
+    /// Rendering bindgroup
+    render_bind_group: wgpu::BindGroup,
+    /// Computing pipeline
+    compute_pipeline: wgpu::ComputePipeline,
+    /// Computing bindgroup
+    compute_bind_group: wgpu::BindGroup,
+    /// Window rendering pipeline
+    window_render_pipeline: wgpu::RenderPipeline,
+    /// Window rendering bindgroup
+    window_render_bind_group: wgpu::BindGroup,
+    /// Render target texture
+    render_texture: wgpu::Texture,
+    /// Various [wgpu::Buffer]s
+    buffers: Buffers,
+}
+
 impl FractalClockRenderer {
     /// Initializes a new FractalClockRenderer for the given window
-    pub fn new(window: Window) -> Self {
+    pub fn new(window: Window, render_size: u32, recursion_depth: usize) -> Self {
         let state = WGPUState::new(window);
 
         // Set up compute pipeline
@@ -240,7 +251,8 @@ impl FractalClockRenderer {
                                 ty: wgpu::BufferBindingType::Storage { read_only: false },
                                 has_dynamic_offset: false,
                                 min_binding_size: Some(
-                                    (NUM_VERTICES as u64 * Vertex::byte_size() as u64)
+                                    ((2_u64.pow(recursion_depth as u32) - 1)
+                                        * Vertex::byte_size() as u64)
                                         .try_into()
                                         .expect("NUM_VERTICES should not be 0"),
                                 ),
@@ -255,7 +267,8 @@ impl FractalClockRenderer {
                                 ty: wgpu::BufferBindingType::Storage { read_only: false },
                                 has_dynamic_offset: false,
                                 min_binding_size: Some(
-                                    (NUM_VERTICES as u64 * Vertex::byte_size() as u64)
+                                    ((2_u64.pow(recursion_depth as u32) - 1)
+                                        * Vertex::byte_size() as u64)
                                         .try_into()
                                         .expect("NUM_VERTICES should not be 0"),
                                 ),
@@ -469,13 +482,18 @@ impl FractalClockRenderer {
                     multiview: None,
                 });
 
-        let buffers = Buffers::new(&state.device);
+        let buffers = Buffers::new(
+            &state.device,
+            render_size as u64,
+            recursion_depth - WORK_GROUP_INITIAL_RECURSION_DEPTH,
+            2_usize.pow(recursion_depth as u32) - 1,
+        );
 
         let render_texture = state.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Render Texture"),
             size: wgpu::Extent3d {
-                width: RENDER_SIZE,
-                height: RENDER_SIZE,
+                width: render_size,
+                height: render_size,
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
@@ -557,6 +575,8 @@ impl FractalClockRenderer {
         });
 
         Self {
+            render_size,
+            recursion_depth,
             state,
             render_pipeline,
             compute_pipeline,
@@ -668,7 +688,7 @@ impl FractalClockRenderer {
 
         // Calculate vertices, recursion layer by layer
         encoder.push_debug_group("Computing");
-        for i in 0..(COMPUTE_RECURSION_DEPTH) as u32 {
+        for i in 0..(self.recursion_depth - WORK_GROUP_INITIAL_RECURSION_DEPTH) as u32 {
             {
                 let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                     label: Some("Compute Pass"),
@@ -719,7 +739,11 @@ impl FractalClockRenderer {
                 self.buffers.index_buffer.slice(..),
                 wgpu::IndexFormat::Uint32,
             );
-            render_pass.draw_indexed(0..NUM_INDICES as u32, 0, 0..1);
+            render_pass.draw_indexed(
+                0..((2_u32.pow(self.recursion_depth as u32) - 2) * 2),
+                0,
+                0..1,
+            );
         }
         encoder.pop_debug_group();
 
@@ -762,12 +786,12 @@ impl FractalClockRenderer {
                 layout: wgpu::ImageDataLayout {
                     offset: 0,
                     bytes_per_row: Some(
-                        (RENDER_SIZE * BYTES_PER_PIXEL)
+                        (self.render_size * BYTES_PER_PIXEL)
                             .next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
                             .try_into()
                             .unwrap(),
                     ),
-                    rows_per_image: Some(RENDER_SIZE.try_into().unwrap()),
+                    rows_per_image: Some(self.render_size.try_into().unwrap()),
                 },
             },
             self.render_texture.size(),
@@ -780,7 +804,7 @@ impl FractalClockRenderer {
     }
 
     /// Reads from the render_output_buffer after waiting for the most recent submission and returns a [image::RgbImage] created from it.
-    pub fn create_image(&self) -> Vec<u8> {
+    pub fn create_image(&self, render_size: u32) -> Vec<u8> {
         let output_slice = self.buffers.render_output_buffer.slice(..);
 
         let (notifyer, waiter) = oneshot::channel();
@@ -793,9 +817,13 @@ impl FractalClockRenderer {
             let mapped = output_slice.get_mapped_range();
 
             let unpadded = mapped
-                .chunks(BYTES_PER_ROW as usize)
+                .chunks(
+                    (render_size * BYTES_PER_PIXEL)
+                        .next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+                        as usize,
+                )
                 .flat_map(|chunk| {
-                    chunk[..UNPADDED_BYTES_PER_ROW as usize]
+                    chunk[..(render_size * BYTES_PER_PIXEL) as usize]
                         .chunks(BYTES_PER_PIXEL as usize)
                         .flat_map(|c| c.iter().take(3))
                 })
