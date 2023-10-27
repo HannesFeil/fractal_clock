@@ -1,10 +1,10 @@
-#![feature(int_roundings)]
 #![feature(array_chunks)]
+#![feature(int_roundings)]
 #![cfg(target_pointer_width = "64")]
 
 use std::{error::Error, fmt::Display, path::PathBuf, str::FromStr, time::Duration};
 
-use clap::{command, Parser};
+use clap::command;
 use constants::{MINUTE_MILLIS, TOTAL_MILLIS};
 use gui::{FractalClockRenderer, Vertex};
 use ndarray::Array3;
@@ -19,7 +19,6 @@ use winit::{
 use crate::constants::{BYTES_PER_PIXEL, RENDER_FORMAT};
 
 mod gui;
-
 mod constants {
     /// Initial recursion depth, depending on work group size
     pub const WORK_GROUP_INITIAL_RECURSION_DEPTH: usize = 9;
@@ -54,23 +53,33 @@ mod constants {
 struct Args {
     /// The file which the rendered video will be written to.
     file: PathBuf,
+
     /// The width and height of the video being rendered.
     size: u32,
+
     /// The total recurion depth
     #[arg(short, long, default_value_t = 16)]
     recursion_depth: usize,
+
     /// The starting time.
     #[arg(short, long, default_value_t = 0)]
     start_millis: u64,
+
     /// The ending time.
     #[arg(short, long, default_value_t = TOTAL_MILLIS)]
     end_millis: u64,
+
     /// How many millis time per frame rendered
     #[arg(long, default_value_t = 100)]
     millis_per_frame: u64,
+
     /// Optionally set the color mode.
     #[arg(short, long, default_value_t = ColorMode::HSVDay)]
     color_mode: ColorMode,
+
+    /// Optionally save as images
+    #[arg(short, long, default_value_t = false)]
+    images: bool,
 }
 
 #[derive(Debug)]
@@ -104,7 +113,7 @@ impl Display for ColorMode {
 }
 
 impl ColorMode {
-    const VALID_OPTS: &[&'static str] = &["constant(r[0.0-1.0],g[0.0-1.0],b[0.0-1.0])", "hsvday"];
+    const VALID_OPTS: &'static [&'static str] = &["constant(r[0.0-1.0],g[0.0-1.0],b[0.0-1.0])", "hsvday"];
 
     pub fn color(&self, time_millis: u64) -> [f32; 3] {
         match *self {
@@ -151,11 +160,11 @@ impl FromStr for ColorMode {
 fn main() {
     assert_eq!(
         BYTES_PER_PIXEL,
-        RENDER_FORMAT.describe().block_size as u32,
+        RENDER_FORMAT.block_size(None).unwrap(),
         "BYTES_PER_PIXEL has to match RENDER_FORMAT"
     );
 
-    let args = Args::parse();
+    let args = <Args as clap::Parser>::parse();
 
     run(args);
 }
@@ -164,7 +173,7 @@ fn run(args: Args) {
     env_logger::init();
     video_rs::init().unwrap();
 
-    let destination: Locator = args.file.into();
+    let destination: Locator = args.file.clone().into();
     let settings = EncoderSettings::for_h264_yuv420p(args.size as usize, args.size as usize, false);
 
     let mut encoder = Encoder::new(&destination, settings).expect("failed to create encoder");
@@ -221,18 +230,31 @@ fn run(args: Args) {
                     / state.window().inner_size().width as f32,
             ) {
                 Ok(_) => {
-                    let frame = Array3::from_shape_vec(
-                        (args.size as usize, args.size as usize, 3),
-                        state.create_image(args.size),
-                    )
-                    .unwrap();
+                    let image = state.create_image(args.size);
 
-                    encoder
-                        .encode(&frame, &position)
-                        .expect("failed to encode frame");
+                    if args.images {
+                        let img =
+                            image::RgbImage::from_raw(args.size, args.size, image.clone()).unwrap();
+                        let mut file_name = args.file.file_name().expect("Expect valid file name").to_os_string();
+                        file_name.push(format!("-{index}.png", index = current_millis / args.millis_per_frame));
+                        let mut path = args.file.clone();
+                        path.set_file_name(file_name);
 
-                    // Update the current position and add `duration` to it.
-                    position = position.aligned_with(&duration).add();
+                        img.save(path).expect("Expect to be able to write file");
+                    } else {
+                        let frame = Array3::from_shape_vec(
+                            (args.size as usize, args.size as usize, 3),
+                            image,
+                        )
+                        .unwrap();
+
+                        encoder
+                            .encode(&frame, &position)
+                            .expect("failed to encode frame");
+
+                        // Update the current position and add `duration` to it.
+                        position = position.aligned_with(&duration).add();
+                    }
                 }
                 Err(wgpu::SurfaceError::Lost) => state.resize(state.window().inner_size()),
                 Err(wgpu::SurfaceError::OutOfMemory) => control_flow.set_exit(),
