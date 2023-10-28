@@ -95,7 +95,7 @@ impl Buffers {
     /// Creates the buffers with the given device
     fn new(
         device: &wgpu::Device,
-        render_size: u64,
+        render_size: (u64, u64),
         compute_rec_depth: usize,
         num_vertices: usize,
     ) -> Self {
@@ -177,9 +177,9 @@ impl Buffers {
 
         let render_output_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Render Output Buffer"),
-            size: (render_size as u32 * BYTES_PER_PIXEL)
+            size: (render_size.0 as u32 * BYTES_PER_PIXEL)
                 .next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) as u64
-                * render_size,
+                * render_size.1,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
@@ -204,7 +204,7 @@ impl Buffers {
 /// 3.  Sampling the texture and drawing it to the window
 pub struct FractalClockRenderer {
     /// width and height of the rendered clock in pixels
-    render_size: u32,
+    render_size: (u32, u32),
     /// Total recursion depth
     recursion_depth: usize,
     /// window, device, queue etc.
@@ -229,7 +229,7 @@ pub struct FractalClockRenderer {
 
 impl FractalClockRenderer {
     /// Initializes a new FractalClockRenderer for the given window
-    pub fn new(window: Window, render_size: u32, recursion_depth: usize) -> Self {
+    pub fn new(window: Window, render_size: (u32, u32), recursion_depth: usize) -> Self {
         let state = WGPUState::new(window);
 
         // Set up compute pipeline
@@ -484,7 +484,7 @@ impl FractalClockRenderer {
 
         let buffers = Buffers::new(
             &state.device,
-            render_size as u64,
+            (render_size.0 as u64, render_size.1 as u64),
             recursion_depth - WORK_GROUP_INITIAL_RECURSION_DEPTH,
             2_usize.pow(recursion_depth as u32) - 1,
         );
@@ -492,8 +492,8 @@ impl FractalClockRenderer {
         let render_texture = state.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Render Texture"),
             size: wgpu::Extent3d {
-                width: render_size,
-                height: render_size,
+                width: render_size.0,
+                height: render_size.1,
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
@@ -611,7 +611,6 @@ impl FractalClockRenderer {
         mut hour: Vertex,
         mut minute: Vertex,
         [r, g, b]: [f32; 3],
-        aspect_ratio: f32,
     ) -> Result<wgpu::SubmissionIndex, wgpu::SurfaceError> {
         let surface_output = self.state.surface.get_current_texture()?;
         let render_view = self
@@ -646,7 +645,13 @@ impl FractalClockRenderer {
         }
 
         // Set Render uniforms (color and transparency)
-        let render_uniform: [f32; 4] = [r, g, b, TRANSPARENCY];
+        let render_uniform: [f32; 5] = [
+            r,
+            g,
+            b,
+            TRANSPARENCY,
+            self.render_size.0 as f32 / self.render_size.1 as f32,
+        ];
 
         self.state.queue.write_buffer(
             &self.buffers.render_uniform_buffer,
@@ -657,7 +662,7 @@ impl FractalClockRenderer {
         self.state.queue.write_buffer(
             &self.buffers.window_render_uniform_buffer,
             0,
-            bytemuck::cast_slice(&[aspect_ratio]),
+            bytemuck::cast_slice(&[1.0_f32]),
         );
 
         self.state.queue.write_buffer(
@@ -786,12 +791,10 @@ impl FractalClockRenderer {
                 layout: wgpu::ImageDataLayout {
                     offset: 0,
                     bytes_per_row: Some(
-                        (self.render_size * BYTES_PER_PIXEL)
-                            .next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
-                            .try_into()
-                            .unwrap(),
+                        (self.render_size.0 * BYTES_PER_PIXEL)
+                            .next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT),
                     ),
-                    rows_per_image: Some(self.render_size.try_into().unwrap()),
+                    rows_per_image: Some(self.render_size.1),
                 },
             },
             self.render_texture.size(),
@@ -804,7 +807,7 @@ impl FractalClockRenderer {
     }
 
     /// Reads from the render_output_buffer after waiting for the most recent submission and returns a [image::RgbImage] created from it.
-    pub fn create_image(&self, render_size: u32) -> Vec<u8> {
+    pub fn create_image(&self, render_size: (u32, u32)) -> Vec<u8> {
         let output_slice = self.buffers.render_output_buffer.slice(..);
 
         let (notifyer, waiter) = oneshot::channel();
@@ -818,12 +821,12 @@ impl FractalClockRenderer {
 
             let unpadded = mapped
                 .chunks(
-                    (render_size * BYTES_PER_PIXEL)
+                    (render_size.0 * BYTES_PER_PIXEL)
                         .next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
                         as usize,
                 )
                 .flat_map(|chunk| {
-                    chunk[..(render_size * BYTES_PER_PIXEL) as usize]
+                    chunk[..(render_size.0 * BYTES_PER_PIXEL) as usize]
                         .chunks(BYTES_PER_PIXEL as usize)
                         .flat_map(|c| c.iter().take(3))
                 })

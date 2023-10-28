@@ -7,6 +7,7 @@ struct VertexInput {
 
 struct RenderUniform {
     color: vec4<f32>,
+    aspect_ratio: f32,
 }
 
 @group(0) @binding(0)
@@ -22,7 +23,7 @@ fn vs_main(
     model: VertexInput,
 ) -> VertexOutput {
     var out: VertexOutput;
-    out.clip_position = vec4<f32>(model.position.y, model.position.x, 0.0, 1.0);
+    out.clip_position = vec4<f32>(model.position.y / render.aspect_ratio, model.position.x, 0.0, 1.0);
     if model.index == 0u {
         out.base_pointer = 1.0;
     } else {

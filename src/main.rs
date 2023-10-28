@@ -54,8 +54,11 @@ struct Args {
     /// The file which the rendered video will be written to.
     file: PathBuf,
 
-    /// The width and height of the video being rendered.
-    size: u32,
+    /// The width of the video being rendered.
+    width: u32,
+
+    /// The height of the video being rendered.
+    height: u32,
 
     /// The total recurion depth
     #[arg(short, long, default_value_t = 16)]
@@ -80,6 +83,10 @@ struct Args {
     /// Optionally save as images
     #[arg(short, long, default_value_t = false)]
     images: bool,
+
+    /// Optionally change the video format, default is mp4
+    #[arg(short, long, default_value_t = ("mp4".to_string()))]
+    format: String,
 }
 
 #[derive(Debug)]
@@ -113,7 +120,8 @@ impl Display for ColorMode {
 }
 
 impl ColorMode {
-    const VALID_OPTS: &'static [&'static str] = &["constant(r[0.0-1.0],g[0.0-1.0],b[0.0-1.0])", "hsvday"];
+    const VALID_OPTS: &'static [&'static str] =
+        &["constant(r[0.0-1.0],g[0.0-1.0],b[0.0-1.0])", "hsvday"];
 
     pub fn color(&self, time_millis: u64) -> [f32; 3] {
         match *self {
@@ -174,9 +182,11 @@ fn run(args: Args) {
     video_rs::init().unwrap();
 
     let destination: Locator = args.file.clone().into();
-    let settings = EncoderSettings::for_h264_yuv420p(args.size as usize, args.size as usize, false);
+    let settings =
+        EncoderSettings::for_h264_yuv420p(args.width as usize, args.height as usize, false);
 
-    let mut encoder = Encoder::new(&destination, settings).expect("failed to create encoder");
+    let mut encoder = Encoder::new_with_format(&destination, settings, &args.format)
+        .expect("failed to create encoder");
 
     // By determining the duration of each frame, we are essentially determing
     // the true frame rate of the output video. We choose 24 here.
@@ -188,7 +198,8 @@ fn run(args: Args) {
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new().build(&event_loop).unwrap();
 
-    let mut state = FractalClockRenderer::new(window, args.size, args.recursion_depth);
+    let mut state =
+        FractalClockRenderer::new(window, (args.width, args.height), args.recursion_depth);
 
     let mut hour: Vertex = (1.0, 0.0).into();
     let mut minute: Vertex = (1.0, 0.0).into();
@@ -226,24 +237,29 @@ fn run(args: Args) {
                 hour_angle.sin_cos().into(),
                 minute_angle.sin_cos().into(),
                 args.color_mode.color(current_millis),
-                state.window().inner_size().height as f32
-                    / state.window().inner_size().width as f32,
             ) {
                 Ok(_) => {
-                    let image = state.create_image(args.size);
+                    let image = state.create_image((args.width, args.height));
 
                     if args.images {
-                        let img =
-                            image::RgbImage::from_raw(args.size, args.size, image.clone()).unwrap();
-                        let mut file_name = args.file.file_name().expect("Expect valid file name").to_os_string();
-                        file_name.push(format!("-{index}.png", index = current_millis / args.millis_per_frame));
+                        let img = image::RgbImage::from_raw(args.width, args.height, image.clone())
+                            .unwrap();
+                        let mut file_name = args
+                            .file
+                            .file_name()
+                            .expect("Expect valid file name")
+                            .to_os_string();
+                        file_name.push(format!(
+                            "-{index}.png",
+                            index = current_millis / args.millis_per_frame
+                        ));
                         let mut path = args.file.clone();
                         path.set_file_name(file_name);
 
                         img.save(path).expect("Expect to be able to write file");
                     } else {
                         let frame = Array3::from_shape_vec(
-                            (args.size as usize, args.size as usize, 3),
+                            (args.height as usize, args.width as usize, 3),
                             image,
                         )
                         .unwrap();
