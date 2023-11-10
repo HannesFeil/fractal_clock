@@ -2,7 +2,13 @@
 #![feature(int_roundings)]
 #![cfg(target_pointer_width = "64")]
 
-use std::{error::Error, fmt::Display, path::PathBuf, str::FromStr, time::Duration};
+use std::{
+    error::Error,
+    fmt::Display,
+    path::PathBuf,
+    str::FromStr,
+    time::{Duration, Instant},
+};
 
 use clap::command;
 use constants::{MINUTE_MILLIS, TOTAL_MILLIS};
@@ -39,7 +45,7 @@ mod constants {
     };
 
     pub const SCALE: f32 = 0.25;
-    pub const HOUR_SCALE: f32 = 0.5;
+    pub const HOUR_SCALE: f32 = 0.8;
     pub const SHRINKING_FACTOR: f32 = 0.75;
     pub const TRANSPARENCY: f32 = 0.075;
 
@@ -233,6 +239,7 @@ fn run(args: Args) {
             hour.scale(1.0 / hour.len());
             minute.scale(1.0 / minute.len());
 
+            let now = Instant::now();
             match state.render(
                 hour_angle.sin_cos().into(),
                 minute_angle.sin_cos().into(),
@@ -241,20 +248,26 @@ fn run(args: Args) {
                 Ok(_) => {
                     let image = state.create_image((args.width, args.height));
 
+                    println!(
+                        "Current frame took {elapsed:?}",
+                        elapsed = Instant::now().duration_since(now)
+                    );
+
+                    let mut file_name = args
+                        .file
+                        .file_name()
+                        .expect("Expect valid file name")
+                        .to_os_string();
+                    file_name.push(format!(
+                        "-{index}.png",
+                        index = current_millis / args.millis_per_frame
+                    ));
+                    let mut path = args.file.clone();
+                    path.set_file_name(file_name);
+
                     if args.images {
                         let img = image::RgbImage::from_raw(args.width, args.height, image.clone())
                             .unwrap();
-                        let mut file_name = args
-                            .file
-                            .file_name()
-                            .expect("Expect valid file name")
-                            .to_os_string();
-                        file_name.push(format!(
-                            "-{index}.png",
-                            index = current_millis / args.millis_per_frame
-                        ));
-                        let mut path = args.file.clone();
-                        path.set_file_name(file_name);
 
                         img.save(path).expect("Expect to be able to write file");
                     } else {

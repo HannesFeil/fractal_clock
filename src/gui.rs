@@ -631,7 +631,7 @@ impl FractalClockRenderer {
         directions[0].scale(SCALE * HOUR_SCALE);
         directions[1].scale(SCALE);
 
-        hour.scale(SHRINKING_FACTOR);
+        hour.scale(SHRINKING_FACTOR * HOUR_SCALE);
         minute.scale(SHRINKING_FACTOR);
 
         for i in 0..WORK_GROUP_SIZE - 1 {
