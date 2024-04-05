@@ -7,19 +7,15 @@ use std::{
     fmt::Display,
     path::PathBuf,
     str::FromStr,
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use clap::command;
 use constants::{MINUTE_MILLIS, TOTAL_MILLIS};
 use gui::{FractalClockRenderer, Vertex};
-use ndarray::Array3;
 use palette::{FromColor, Hsv, Srgb};
-use video_rs::{Encoder, EncoderSettings, Locator, Time};
 use winit::{
-    event::{Event, WindowEvent},
-    event_loop::EventLoop,
-    window::WindowBuilder,
+    event::{Event, WindowEvent}, event_loop::{ControlFlow::Poll, EventLoop}, platform::wayland::WindowBuilderExtWayland, window::WindowBuilder
 };
 
 use crate::constants::{BYTES_PER_PIXEL, RENDER_FORMAT};
@@ -185,24 +181,10 @@ fn main() {
 
 fn run(args: Args) {
     env_logger::init();
-    video_rs::init().unwrap();
-
-    let destination: Locator = args.file.clone().into();
-    let settings =
-        EncoderSettings::for_h264_yuv420p(args.width as usize, args.height as usize, false);
-
-    let mut encoder = Encoder::new_with_format(&destination, settings, &args.format)
-        .expect("failed to create encoder");
-
-    // By determining the duration of each frame, we are essentially determing
-    // the true frame rate of the output video. We choose 24 here.
-    let duration: Time = Duration::from_millis(args.millis_per_frame).into();
-
-    // Keep track of the current video timestamp.
-    let mut position = Time::zero();
-
-    let event_loop = EventLoop::new();
-    let window = WindowBuilder::new().build(&event_loop).unwrap();
+    
+    let event_loop = EventLoop::new().unwrap();
+    event_loop.set_control_flow(Poll);
+    let window = WindowBuilder::new().with_name("kitty-bg", "kitty-bg").build(&event_loop).unwrap();
 
     let mut state =
         FractalClockRenderer::new(window, (args.width, args.height), args.recursion_depth);
@@ -212,93 +194,67 @@ fn run(args: Args) {
 
     let mut current_millis = args.start_millis;
 
-    event_loop.run(move |event, _, control_flow| match event {
+    event_loop.run(move |event, elwt| match event {
+        Event::DeviceEvent { device_id: _, event } => {
+            match event {
+                winit::event::DeviceEvent::MouseMotion { delta } => { dbg!(delta); },
+                _ => { dbg!(event); }
+            }
+        }
         Event::WindowEvent {
             ref event,
             window_id,
         } if window_id == state.window().id() => match event {
-            WindowEvent::CloseRequested => control_flow.set_exit(),
+            WindowEvent::CloseRequested => elwt.exit(),
             WindowEvent::Resized(size) => state.resize(*size),
-            WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
-                state.resize(**new_inner_size)
+            WindowEvent::KeyboardInput { device_id: _, event, is_synthetic: _ } => {
+                dbg!(event);
+            }
+            WindowEvent::CursorMoved { device_id: _, position } => {
+                dbg!(position);
+            }
+            WindowEvent::RedrawRequested => {
+                let hour_angle =
+                    -2.0 * (current_millis as f32 / TOTAL_MILLIS as f32) * std::f32::consts::PI
+                        + std::f32::consts::FRAC_PI_2;
+
+                let minute_angle = -2.0
+                    * ((current_millis % MINUTE_MILLIS) as f32 / MINUTE_MILLIS as f32)
+                    * std::f32::consts::PI
+                    + std::f32::consts::FRAC_PI_2;
+
+                // println!("Rendering frame: current millis = {current_millis}");
+
+                hour.scale(1.0 / hour.len());
+                minute.scale(1.0 / minute.len());
+
+                let _now = Instant::now();
+                match state.render(
+                    hour_angle.sin_cos().into(),
+                    minute_angle.sin_cos().into(),
+                    args.color_mode.color(current_millis),
+                ) {
+                    Ok(_) => {
+                        // println!(
+                        //     "Current frame took {elapsed:?}",
+                        //     elapsed = Instant::now().duration_since(now)
+                        // );
+                    }
+                    Err(wgpu::SurfaceError::Lost) => state.resize(state.window().inner_size()),
+                    Err(wgpu::SurfaceError::OutOfMemory) => elwt.exit(),
+                    Err(e) => eprintln!("{e:?}"),
+                }
+
+                current_millis += args.millis_per_frame;
+
+                if current_millis > args.end_millis {
+                    elwt.exit();
+                }
+
+                state.window().request_redraw();
             }
             _ => {}
         },
-        Event::MainEventsCleared => {
-            let hour_angle =
-                -2.0 * (current_millis as f32 / TOTAL_MILLIS as f32) * std::f32::consts::PI
-                    + std::f32::consts::FRAC_PI_2;
-
-            let minute_angle = -2.0
-                * ((current_millis % MINUTE_MILLIS) as f32 / MINUTE_MILLIS as f32)
-                * std::f32::consts::PI
-                + std::f32::consts::FRAC_PI_2;
-
-            println!("Rendering frame: current millis = {current_millis}");
-
-            hour.scale(1.0 / hour.len());
-            minute.scale(1.0 / minute.len());
-
-            let now = Instant::now();
-            match state.render(
-                hour_angle.sin_cos().into(),
-                minute_angle.sin_cos().into(),
-                args.color_mode.color(current_millis),
-            ) {
-                Ok(_) => {
-                    let image = state.create_image((args.width, args.height));
-
-                    println!(
-                        "Current frame took {elapsed:?}",
-                        elapsed = Instant::now().duration_since(now)
-                    );
-
-                    let mut file_name = args
-                        .file
-                        .file_name()
-                        .expect("Expect valid file name")
-                        .to_os_string();
-                    file_name.push(format!(
-                        "-{index}.png",
-                        index = current_millis / args.millis_per_frame
-                    ));
-                    let mut path = args.file.clone();
-                    path.set_file_name(file_name);
-
-                    if args.images {
-                        let img = image::RgbImage::from_raw(args.width, args.height, image.clone())
-                            .unwrap();
-
-                        img.save(path).expect("Expect to be able to write file");
-                    } else {
-                        let frame = Array3::from_shape_vec(
-                            (args.height as usize, args.width as usize, 3),
-                            image,
-                        )
-                        .unwrap();
-
-                        encoder
-                            .encode(&frame, &position)
-                            .expect("failed to encode frame");
-
-                        // Update the current position and add `duration` to it.
-                        position = position.aligned_with(&duration).add();
-                    }
-                }
-                Err(wgpu::SurfaceError::Lost) => state.resize(state.window().inner_size()),
-                Err(wgpu::SurfaceError::OutOfMemory) => control_flow.set_exit(),
-                Err(e) => eprintln!("{e:?}"),
-            }
-
-            current_millis += args.millis_per_frame;
-
-            if current_millis > args.end_millis {
-                control_flow.set_exit();
-            }
-        }
-        Event::LoopDestroyed => {
-            encoder.finish().expect("failed to finish encoder");
-        }
         _ => {}
-    });
+    }).unwrap();
 }
