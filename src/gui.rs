@@ -1,5 +1,6 @@
 use std::ops::{Add, Mul};
 
+use image::{GrayImage, Luma};
 use wgpu::BufferUsages;
 use winit::{dpi::PhysicalSize, window::Window};
 
@@ -807,7 +808,7 @@ impl FractalClockRenderer {
     }
 
     /// Reads from the render_output_buffer after waiting for the most recent submission and returns a [image::RgbImage] created from it.
-    pub fn create_image(&self, render_size: (u32, u32)) -> Vec<u8> {
+    pub fn create_image(&self, image: &mut GrayImage) {
         let output_slice = self.buffers.render_output_buffer.slice(..);
 
         let (notifyer, waiter) = oneshot::channel();
@@ -819,24 +820,27 @@ impl FractalClockRenderer {
         if let Ok(Ok(())) = waiter.recv() {
             let mapped = output_slice.get_mapped_range();
 
-            let unpadded = mapped
+            let width = image.width();
+
+            mapped
                 .chunks(
-                    (render_size.0 * BYTES_PER_PIXEL)
+                    (width * BYTES_PER_PIXEL)
                         .next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
                         as usize,
                 )
                 .flat_map(|chunk| {
-                    chunk[..(render_size.0 * BYTES_PER_PIXEL) as usize]
+                    chunk[..(width * BYTES_PER_PIXEL) as usize]
                         .chunks(BYTES_PER_PIXEL as usize)
-                        .flat_map(|c| c.iter().take(3))
+                        .flat_map(|c| c.iter().skip(3).take(1))
                 })
-                .cloned()
-                .collect::<Vec<_>>();
+                .copied()
+                .zip(image.pixels_mut())
+                .for_each(|(alpha, pixel)| {
+                    *pixel = Luma([alpha]);
+                });
 
             drop(mapped);
             self.buffers.render_output_buffer.unmap();
-
-            unpadded
         } else {
             panic!("Failed async map on render_output buffer");
         }

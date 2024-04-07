@@ -3,19 +3,18 @@
 #![cfg(target_pointer_width = "64")]
 
 use std::{
-    error::Error,
-    fmt::Display,
-    path::PathBuf,
-    str::FromStr,
+    fs::{self, File},
     time::Instant,
 };
 
 use clap::command;
-use constants::{MINUTE_MILLIS, TOTAL_MILLIS};
+use constants::{HOUR_MILLIS, TOTAL_MILLIS};
 use gui::{FractalClockRenderer, Vertex};
-use palette::{FromColor, Hsv, Srgb};
+use image::GrayImage;
 use winit::{
-    event::{Event, WindowEvent}, event_loop::{ControlFlow::Poll, EventLoop}, platform::wayland::WindowBuilderExtWayland, window::WindowBuilder
+    event::{Event, WindowEvent},
+    event_loop::{ControlFlow::Poll, EventLoop},
+    window::WindowBuilder,
 };
 
 use crate::constants::{BYTES_PER_PIXEL, RENDER_FORMAT};
@@ -45,17 +44,14 @@ mod constants {
     pub const SHRINKING_FACTOR: f32 = 0.75;
     pub const TRANSPARENCY: f32 = 0.075;
 
-    pub const MINUTE_MILLIS: u64 = 60 * 60 * 1000;
-    pub const TOTAL_MILLIS: u64 = 12 * MINUTE_MILLIS;
+    pub const HOUR_MILLIS: u64 = 60 * 60 * 1000;
+    pub const TOTAL_MILLIS: u64 = 12 * HOUR_MILLIS;
 }
 
 #[derive(clap::Parser)]
 #[command(name = "Fractal Clock")]
 #[command(author, version, about = "Renders a fractal clock", long_about = None)]
 struct Args {
-    /// The file which the rendered video will be written to.
-    file: PathBuf,
-
     /// The width of the video being rendered.
     width: u32,
 
@@ -77,94 +73,6 @@ struct Args {
     /// How many millis time per frame rendered
     #[arg(long, default_value_t = 100)]
     millis_per_frame: u64,
-
-    /// Optionally set the color mode.
-    #[arg(short, long, default_value_t = ColorMode::HSVDay)]
-    color_mode: ColorMode,
-
-    /// Optionally save as images
-    #[arg(short, long, default_value_t = false)]
-    images: bool,
-
-    /// Optionally change the video format, default is mp4
-    #[arg(short, long, default_value_t = ("mp4".to_string()))]
-    format: String,
-}
-
-#[derive(Debug)]
-pub struct ColorModeError(String);
-
-impl Display for ColorModeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!(
-            "{invalid} is not a valid color mode. Valid modes are: {opts:?}",
-            invalid = self.0,
-            opts = ColorMode::VALID_OPTS,
-        ))
-    }
-}
-
-impl Error for ColorModeError {}
-
-#[derive(Clone, Debug)]
-pub enum ColorMode {
-    HSVDay,
-    Constant(f32, f32, f32),
-}
-
-impl Display for ColorMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ColorMode::HSVDay => f.write_str("hsvday"),
-            ColorMode::Constant(r, g, b) => f.write_fmt(format_args!("constant({r},{g},{b})")),
-        }
-    }
-}
-
-impl ColorMode {
-    const VALID_OPTS: &'static [&'static str] =
-        &["constant(r[0.0-1.0],g[0.0-1.0],b[0.0-1.0])", "hsvday"];
-
-    pub fn color(&self, time_millis: u64) -> [f32; 3] {
-        match *self {
-            ColorMode::Constant(r, g, b) => [r, g, b],
-            ColorMode::HSVDay => {
-                let (r, g, b) = Srgb::from_color(Hsv::new(
-                    time_millis as f32 / TOTAL_MILLIS as f32 * 360.0,
-                    1.0,
-                    1.0,
-                ))
-                .into_linear()
-                .into_components();
-
-                [r, g, b]
-            }
-        }
-    }
-}
-
-impl FromStr for ColorMode {
-    type Err = ColorModeError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let s = s.trim();
-        if s == "hsvday" {
-            Ok(ColorMode::HSVDay)
-        } else if s.starts_with("constant") {
-            let trimmed = s.trim_start_matches("constant");
-            let vals = trimmed[1..trimmed.len() - 1]
-                .split(',')
-                .map(|v| v.parse::<f32>())
-                .collect::<Vec<_>>();
-            if let [Ok(r), Ok(g), Ok(b)] = vals.as_slice() {
-                Ok(ColorMode::Constant(*r, *g, *b))
-            } else {
-                Err(ColorModeError(s.to_string()))
-            }
-        } else {
-            Err(ColorModeError(s.to_string()))
-        }
-    }
 }
 
 fn main() {
@@ -181,10 +89,12 @@ fn main() {
 
 fn run(args: Args) {
     env_logger::init();
-    
+
     let event_loop = EventLoop::new().unwrap();
     event_loop.set_control_flow(Poll);
-    let window = WindowBuilder::new().with_name("kitty-bg", "kitty-bg").build(&event_loop).unwrap();
+    let window = WindowBuilder::new().build(&event_loop).unwrap();
+
+    let mut image = GrayImage::new(args.width, args.height);
 
     let mut state =
         FractalClockRenderer::new(window, (args.width, args.height), args.recursion_depth);
@@ -194,67 +104,66 @@ fn run(args: Args) {
 
     let mut current_millis = args.start_millis;
 
-    event_loop.run(move |event, elwt| match event {
-        Event::DeviceEvent { device_id: _, event } => {
-            match event {
-                winit::event::DeviceEvent::MouseMotion { delta } => { dbg!(delta); },
-                _ => { dbg!(event); }
-            }
-        }
-        Event::WindowEvent {
-            ref event,
-            window_id,
-        } if window_id == state.window().id() => match event {
-            WindowEvent::CloseRequested => elwt.exit(),
-            WindowEvent::Resized(size) => state.resize(*size),
-            WindowEvent::KeyboardInput { device_id: _, event, is_synthetic: _ } => {
-                dbg!(event);
-            }
-            WindowEvent::CursorMoved { device_id: _, position } => {
-                dbg!(position);
-            }
-            WindowEvent::RedrawRequested => {
-                let hour_angle =
-                    -2.0 * (current_millis as f32 / TOTAL_MILLIS as f32) * std::f32::consts::PI
+    event_loop
+        .run(move |event, elwt| match event {
+            Event::WindowEvent {
+                ref event,
+                window_id,
+            } if window_id == state.window().id() => match event {
+                WindowEvent::CloseRequested => elwt.exit(),
+                WindowEvent::Resized(size) => state.resize(*size),
+                WindowEvent::RedrawRequested => {
+                    let hour_angle =
+                        -2.0 * (current_millis as f32 / TOTAL_MILLIS as f32) * std::f32::consts::PI
+                            + std::f32::consts::FRAC_PI_2;
+
+                    let minute_angle = -2.0
+                        * ((current_millis % HOUR_MILLIS) as f32 / HOUR_MILLIS as f32)
+                        * std::f32::consts::PI
                         + std::f32::consts::FRAC_PI_2;
 
-                let minute_angle = -2.0
-                    * ((current_millis % MINUTE_MILLIS) as f32 / MINUTE_MILLIS as f32)
-                    * std::f32::consts::PI
-                    + std::f32::consts::FRAC_PI_2;
+                    // println!("Rendering frame: current millis = {current_millis}");
 
-                // println!("Rendering frame: current millis = {current_millis}");
+                    hour.scale(1.0 / hour.len());
+                    minute.scale(1.0 / minute.len());
 
-                hour.scale(1.0 / hour.len());
-                minute.scale(1.0 / minute.len());
+                    let _now = Instant::now();
+                    match state.render(
+                        hour_angle.sin_cos().into(),
+                        minute_angle.sin_cos().into(),
+                        [1.0, 1.0, 1.0],
+                    ) {
+                        Ok(_) => {
+                            state.create_image(&mut image);
 
-                let _now = Instant::now();
-                match state.render(
-                    hour_angle.sin_cos().into(),
-                    minute_angle.sin_cos().into(),
-                    args.color_mode.color(current_millis),
-                ) {
-                    Ok(_) => {
-                        // println!(
-                        //     "Current frame took {elapsed:?}",
-                        //     elapsed = Instant::now().duration_since(now)
-                        // );
+                            let hour = current_millis / HOUR_MILLIS;
+                            let current_in_hour = current_millis % HOUR_MILLIS;
+
+                            image::save_buffer(
+                                format!("output/{hour}/fractal_clock_frame_{current_in_hour:07}.png"),
+                                &image,
+                                image.width(),
+                                image.height(),
+                                image::ColorType::L8,
+                            )
+                            .unwrap();
+                        }
+                        Err(wgpu::SurfaceError::Lost) => state.resize(state.window().inner_size()),
+                        Err(wgpu::SurfaceError::OutOfMemory) => elwt.exit(),
+                        Err(e) => eprintln!("{e:?}"),
                     }
-                    Err(wgpu::SurfaceError::Lost) => state.resize(state.window().inner_size()),
-                    Err(wgpu::SurfaceError::OutOfMemory) => elwt.exit(),
-                    Err(e) => eprintln!("{e:?}"),
+
+                    current_millis += args.millis_per_frame;
+
+                    if current_millis > args.end_millis {
+                        elwt.exit();
+                    }
+
+                    state.window().request_redraw();
                 }
-
-                current_millis += args.millis_per_frame;
-
-                if current_millis > args.end_millis {
-                    elwt.exit();
-                }
-
-                state.window().request_redraw();
-            }
+                _ => {}
+            },
             _ => {}
-        },
-        _ => {}
-    }).unwrap();
+        })
+        .unwrap();
 }
