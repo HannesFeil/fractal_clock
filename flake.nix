@@ -10,7 +10,7 @@
   outputs = { self, nixpkgs, flake-utils, nixgl }:
     flake-utils.lib.eachDefaultSystem (system: 
       let 
-        pkgs = import nixpkgs { inherit system; overlays = [ nixgl.overlay ]; };
+        pkgs = import nixpkgs { inherit system; };
       in with pkgs;
         {
           devShell = mkShell rec {
@@ -22,7 +22,7 @@
               wayland          
             ];
             packages = [
-              pkgs.nixgl.nixGLIntel
+              (pkgs.lib.traceVal nixgl.packages.${system}).default
             ];
             LD_LIBRARY_PATH = "${lib.makeLibraryPath buildInputs}";
           };
