@@ -137,10 +137,9 @@ fn run(args: Args) {
                             state.create_image(&mut image);
 
                             let hour = current_millis / HOUR_MILLIS;
-                            let current_in_hour = current_millis % HOUR_MILLIS;
 
                             image::save_buffer(
-                                format!("output/{hour}/fractal_clock_frame_{current_in_hour:07}.png"),
+                                format!("output/{hour}/fractal_clock_frame_{current_millis:08}.png"),
                                 &image,
                                 image.width(),
                                 image.height(),
