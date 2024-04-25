@@ -1,6 +1,6 @@
 use std::ops::{Add, Mul};
 
-use image::{GrayImage, Luma};
+use image::{Pixel, Rgb, RgbImage};
 use wgpu::BufferUsages;
 use winit::{dpi::PhysicalSize, window::Window};
 
@@ -808,7 +808,7 @@ impl FractalClockRenderer {
     }
 
     /// Reads from the render_output_buffer after waiting for the most recent submission and returns a [image::RgbImage] created from it.
-    pub fn create_image(&self, image: &mut GrayImage) {
+    pub fn create_image(&self, image: &mut RgbImage) {
         let output_slice = self.buffers.render_output_buffer.slice(..);
 
         let (notifyer, waiter) = oneshot::channel();
@@ -824,19 +824,15 @@ impl FractalClockRenderer {
 
             mapped
                 .chunks(
-                    (width * BYTES_PER_PIXEL)
-                        .next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+                    (width * BYTES_PER_PIXEL).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
                         as usize,
                 )
                 .flat_map(|chunk| {
-                    chunk[..(width * BYTES_PER_PIXEL) as usize]
-                        .chunks(BYTES_PER_PIXEL as usize)
-                        .flat_map(|c| c.iter().skip(3).take(1))
+                    chunk[..(width * BYTES_PER_PIXEL) as usize].chunks(BYTES_PER_PIXEL as usize)
                 })
-                .copied()
                 .zip(image.pixels_mut())
-                .for_each(|(alpha, pixel)| {
-                    *pixel = Luma([alpha]);
+                .for_each(|(rgba, pixel)| {
+                    *pixel = *Rgb::from_slice(&rgba[..3]);
                 });
 
             drop(mapped);

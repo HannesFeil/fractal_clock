@@ -2,15 +2,13 @@
 #![feature(int_roundings)]
 #![cfg(target_pointer_width = "64")]
 
-use std::{
-    fs::{self, File},
-    time::Instant,
-};
+use std::{path::Path, time::Instant};
 
 use clap::command;
 use constants::{HOUR_MILLIS, TOTAL_MILLIS};
 use gui::{FractalClockRenderer, Vertex};
-use image::GrayImage;
+use image::RgbImage;
+use palette::{rgb::Rgb, FromColor, Hsv, Srgb};
 use winit::{
     event::{Event, WindowEvent},
     event_loop::{ControlFlow::Poll, EventLoop},
@@ -71,8 +69,12 @@ struct Args {
     end_millis: u64,
 
     /// How many millis time per frame rendered
-    #[arg(long, default_value_t = 100)]
+    #[arg(short, long, default_value_t = 100)]
     millis_per_frame: u64,
+
+    /// Rainbow mode
+    #[arg(long)]
+    rainbow: bool,
 }
 
 fn main() {
@@ -94,7 +96,7 @@ fn run(args: Args) {
     event_loop.set_control_flow(Poll);
     let window = WindowBuilder::new().build(&event_loop).unwrap();
 
-    let mut image = GrayImage::new(args.width, args.height);
+    let mut image = RgbImage::new(args.width, args.height);
 
     let mut state =
         FractalClockRenderer::new(window, (args.width, args.height), args.recursion_depth);
@@ -127,23 +129,40 @@ fn run(args: Args) {
                     hour.scale(1.0 / hour.len());
                     minute.scale(1.0 / minute.len());
 
+                    let color = if args.rainbow {
+                        let (r, g, b) = Rgb::from_color(Hsv::<Srgb>::new(
+                            (current_millis as f64 / TOTAL_MILLIS as f64) as f32 * 360.0,
+                            1.0,
+                            1.0,
+                        ))
+                        .into_components();
+                        [r, g, b]
+                    } else {
+                        [1.0, 1.0, 1.0]
+                    };
+
                     let _now = Instant::now();
                     match state.render(
                         hour_angle.sin_cos().into(),
                         minute_angle.sin_cos().into(),
-                        [1.0, 1.0, 1.0],
+                        color,
                     ) {
                         Ok(_) => {
                             state.create_image(&mut image);
 
                             let hour = current_millis / HOUR_MILLIS;
+                            let dir = format!("output/{hour:02}");
+
+                            if !Path::exists(dir.as_ref()) {
+                                std::fs::create_dir_all(&dir).unwrap();
+                            };
 
                             image::save_buffer(
-                                format!("output/{hour}/fractal_clock_frame_{current_millis:08}.png"),
+                                format!("{dir}/fractal_clock_frame_{current_millis:08}.png"),
                                 &image,
                                 image.width(),
                                 image.height(),
-                                image::ColorType::L8,
+                                image::ColorType::Rgb8,
                             )
                             .unwrap();
                         }
